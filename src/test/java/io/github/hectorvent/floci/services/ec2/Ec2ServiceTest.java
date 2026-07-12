@@ -36,6 +36,25 @@ import static org.mockito.Mockito.when;
 class Ec2ServiceTest {
 
     @Test
+    void disassociateVpcCidrBlockRemovesIpv6AssociationAndLocalRoute() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false, true);
+        var association = vpc.getIpv6CidrBlockAssociationSet().getFirst();
+
+        service.disassociateVpcCidrBlock("us-east-1", association.getAssociationId());
+
+        assertTrue(service.describeVpcs("us-east-1", List.of(vpc.getVpcId()), Map.of())
+                .getFirst().getIpv6CidrBlockAssociationSet().isEmpty());
+        assertTrue(service.describeRouteTables("us-east-1", List.of(), Map.of()).stream()
+                .filter(routeTable -> vpc.getVpcId().equals(routeTable.getVpcId()))
+                .flatMap(routeTable -> routeTable.getRoutes().stream())
+                .noneMatch(route -> association.getIpv6CidrBlock().equals(route.getDestinationIpv6CidrBlock())));
+    }
+
+    @Test
     void amazonProvidedIpv6CidrsAreUniqueWithinRegion() {
         Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
                 mock(Ec2PortForwardManager.class),

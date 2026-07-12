@@ -1181,8 +1181,39 @@ public class Ec2Service {
         ensureDefaultResources(region);
         for (Vpc vpc : vpcs.scan(k -> true)) {
             if (vpc.getRegion().equals(region)) {
-                vpc.getCidrBlockAssociationSet().removeIf(a -> a.getAssociationId().equals(associationId));
-                vpcs.put(key(region, vpc.getVpcId()), vpc);
+                synchronized (lockFor(key(region, vpc.getVpcId()))) {
+                    Vpc current = getRequiredVpc(region, vpc.getVpcId());
+                    List<VpcCidrBlockAssociation> ipv4Associations =
+                            new ArrayList<>(current.getCidrBlockAssociationSet());
+                    List<VpcIpv6CidrBlockAssociation> ipv6Associations =
+                            new ArrayList<>(current.getIpv6CidrBlockAssociationSet());
+                    List<String> removedIpv6Cidrs = ipv6Associations.stream()
+                            .filter(association -> association.getAssociationId().equals(associationId))
+                            .map(VpcIpv6CidrBlockAssociation::getIpv6CidrBlock)
+                            .toList();
+                    ipv4Associations.removeIf(association -> association.getAssociationId().equals(associationId));
+                    ipv6Associations.removeIf(association -> association.getAssociationId().equals(associationId));
+                    current.setCidrBlockAssociationSet(ipv4Associations);
+                    current.setIpv6CidrBlockAssociationSet(ipv6Associations);
+                    vpcs.put(key(region, current.getVpcId()), current);
+                    removeVpcIpv6LocalRoutes(region, current.getVpcId(), removedIpv6Cidrs);
+                }
+            }
+        }
+    }
+
+    private void removeVpcIpv6LocalRoutes(String region, String vpcId, List<String> cidrBlocks) {
+        if (cidrBlocks.isEmpty()) return;
+        for (RouteTable routeTable : routeTables.scan(k -> true)) {
+            if (region.equals(routeTable.getRegion()) && vpcId.equals(routeTable.getVpcId())) {
+                synchronized (lockFor(key(region, routeTable.getRouteTableId()))) {
+                    RouteTable current = getRequiredRouteTable(region, routeTable.getRouteTableId());
+                    List<Route> routes = new ArrayList<>(current.getRoutes());
+                    routes.removeIf(route -> "CreateRouteTable".equals(route.getOrigin())
+                            && cidrBlocks.contains(route.getDestinationIpv6CidrBlock()));
+                    current.setRoutes(routes);
+                    routeTables.put(key(region, current.getRouteTableId()), current);
+                }
             }
         }
     }
