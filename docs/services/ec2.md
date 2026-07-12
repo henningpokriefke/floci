@@ -210,6 +210,7 @@ subnets, IPAM, BYOIP, and egress-only internet gateways are not implemented.
 | DeleteSubnet | Deletes a subnet from the local EC2 store. |
 | ModifySubnetAttribute | Updates supported subnet attributes. |
 | AssociateSubnetCidrBlock | Associates an IPv6 CIDR block with an existing subnet. |
+| DisassociateSubnetCidrBlock | Removes an IPv6 CIDR block association from a subnet. |
 
 ### Security Groups
 

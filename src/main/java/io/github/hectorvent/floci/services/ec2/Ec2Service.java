@@ -1,5 +1,8 @@
 package io.github.hectorvent.floci.services.ec2;
 
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -1087,7 +1090,7 @@ public class Ec2Service {
                 new VpcCidrBlockAssociation("vpc-cidr-assoc-" + randomHex(8), cidrBlock));
         if (amazonProvidedIpv6CidrBlock) {
             VpcIpv6CidrBlockAssociation association = new VpcIpv6CidrBlockAssociation(
-                    "vpc-cidr-assoc-" + randomHex(8), generatedIpv6CidrBlock(vpcId));
+                    "vpc-cidr-assoc-" + randomHex(8), generatedIpv6CidrBlock(region));
             association.setNetworkBorderGroup(region);
             vpc.getIpv6CidrBlockAssociationSet().add(association);
         }
@@ -1099,9 +1102,18 @@ public class Ec2Service {
         return vpc;
     }
 
-    private String generatedIpv6CidrBlock(String vpcId) {
-        String suffix = vpcId.substring("vpc-".length());
-        return "2600:1f00:" + suffix.substring(0, 4) + ":" + suffix.substring(4, 6) + "00::/56";
+    private String generatedIpv6CidrBlock(String region) {
+        Set<String> allocated = vpcs.scan(k -> true).stream()
+                .filter(v -> v.getRegion().equals(region))
+                .flatMap(v -> v.getIpv6CidrBlockAssociationSet().stream())
+                .map(VpcIpv6CidrBlockAssociation::getIpv6CidrBlock)
+                .collect(Collectors.toSet());
+        String cidr;
+        do {
+            String suffix = randomHex(6);
+            cidr = "2600:1f00:" + suffix.substring(0, 4) + ":" + suffix.substring(4) + "00::/56";
+        } while (allocated.contains(cidr));
+        return cidr;
     }
 
     public List<Vpc> describeVpcs(String region, List<String> vpcIds, Map<String, List<String>> filters) {
@@ -1305,7 +1317,7 @@ public class Ec2Service {
     public Subnet createSubnet(String region, String vpcId, String cidrBlock, String ipv6CidrBlock,
                                String availabilityZone) {
         ensureDefaultResources(region);
-        getRequiredVpc(region, vpcId);
+        Vpc vpc = getRequiredVpc(region, vpcId);
 
         String subnetId = "subnet-" + randomHex(8);
         Subnet subnet = new Subnet();
@@ -1320,6 +1332,7 @@ public class Ec2Service {
         subnet.setRegion(region);
         subnet.setSubnetArn(AwsArnUtils.Arn.of("ec2", region, accountId, "subnet/" + subnetId).toString());
         if (ipv6CidrBlock != null) {
+            validateSubnetIpv6CidrBlock(vpc, ipv6CidrBlock);
             subnet.getIpv6CidrBlockAssociationSet().add(new SubnetIpv6CidrBlockAssociation(
                     "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock));
         }
@@ -1350,12 +1363,67 @@ public class Ec2Service {
 
     public SubnetIpv6CidrBlockAssociation associateSubnetCidrBlock(
             String region, String subnetId, String ipv6CidrBlock) {
-        Subnet subnet = requireSubnet(region, subnetId);
-        SubnetIpv6CidrBlockAssociation association = new SubnetIpv6CidrBlockAssociation(
-                "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock);
-        subnet.getIpv6CidrBlockAssociationSet().add(association);
-        subnets.put(key(region, subnetId), subnet);
-        return association;
+        synchronized (lockFor(key(region, subnetId))) {
+            Subnet subnet = requireSubnet(region, subnetId);
+            validateSubnetIpv6CidrBlock(getRequiredVpc(region, subnet.getVpcId()), ipv6CidrBlock);
+            SubnetIpv6CidrBlockAssociation association = new SubnetIpv6CidrBlockAssociation(
+                    "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock);
+            List<SubnetIpv6CidrBlockAssociation> next = new ArrayList<>(subnet.getIpv6CidrBlockAssociationSet());
+            next.add(association);
+            subnet.setIpv6CidrBlockAssociationSet(next);
+            subnets.put(key(region, subnetId), subnet);
+            return association;
+        }
+    }
+
+    public SubnetIpv6CidrBlockAssociation disassociateSubnetCidrBlock(String region, String associationId) {
+        for (Subnet subnet : subnets.scan(k -> true)) {
+            Optional<SubnetIpv6CidrBlockAssociation> association = subnet.getIpv6CidrBlockAssociationSet().stream()
+                    .filter(candidate -> candidate.getAssociationId().equals(associationId))
+                    .findFirst();
+            if (subnet.getRegion().equals(region) && association.isPresent()) {
+                synchronized (lockFor(key(region, subnet.getSubnetId()))) {
+                    Subnet current = requireSubnet(region, subnet.getSubnetId());
+                    List<SubnetIpv6CidrBlockAssociation> next = new ArrayList<>(current.getIpv6CidrBlockAssociationSet());
+                    next.removeIf(candidate -> candidate.getAssociationId().equals(associationId));
+                    current.setIpv6CidrBlockAssociationSet(next);
+                    subnets.put(key(region, current.getSubnetId()), current);
+                    return association.get();
+                }
+            }
+        }
+        throw new AwsException("InvalidSubnetCidrBlockAssociationID.NotFound",
+                "The subnet CIDR association ID '" + associationId + "' does not exist", 400);
+    }
+
+    private void validateSubnetIpv6CidrBlock(Vpc vpc, String cidrBlock) {
+        String[] parts = cidrBlock.split("/", -1);
+        if (parts.length != 2 || !"64".equals(parts[1])) {
+            throw new AwsException("InvalidParameterValue", "Subnet IPv6 CIDR blocks must use a /64 prefix", 400);
+        }
+        try {
+            InetAddress subnetAddress = InetAddress.getByName(parts[0]);
+            if (!(subnetAddress instanceof Inet6Address)
+                    || vpc.getIpv6CidrBlockAssociationSet().stream().noneMatch(
+                            association -> isWithinVpcIpv6Cidr(subnetAddress.getAddress(), association.getIpv6CidrBlock()))) {
+                throw new AwsException("InvalidParameterValue",
+                        "The subnet IPv6 CIDR block must be within the VPC IPv6 CIDR block", 400);
+            }
+        } catch (UnknownHostException exception) {
+            throw new AwsException("InvalidParameterValue", "Invalid IPv6 CIDR block '" + cidrBlock + "'", 400);
+        }
+    }
+
+    private boolean isWithinVpcIpv6Cidr(byte[] subnetAddress, String vpcCidrBlock) {
+        try {
+            byte[] vpcAddress = InetAddress.getByName(vpcCidrBlock.split("/", -1)[0]).getAddress();
+            for (int i = 0; i < 7; i++) {
+                if (subnetAddress[i] != vpcAddress[i]) return false;
+            }
+            return true;
+        } catch (UnknownHostException exception) {
+            return false;
+        }
     }
 
     public void deleteSubnet(String region, String subnetId) {
@@ -2410,6 +2478,13 @@ public class Ec2Service {
         ensureDefaultResources(region);
         synchronized (lockFor(key(region, routeTableId))) {
             RouteTable current = getRequiredRouteTable(region, routeTableId);
+            boolean exists = current.getRoutes().stream().anyMatch(route ->
+                    destinationCidrBlock != null && destinationCidrBlock.equals(route.getDestinationCidrBlock())
+                            || destinationIpv6CidrBlock != null
+                                    && destinationIpv6CidrBlock.equals(route.getDestinationIpv6CidrBlock()));
+            if (exists) {
+                throw new AwsException("RouteAlreadyExists", "The specified route already exists", 400);
+            }
             List<Route> next = new ArrayList<>(current.getRoutes());
             Route route = new Route(destinationCidrBlock, gatewayId, "CreateRoute");
             route.setDestinationIpv6CidrBlock(destinationIpv6CidrBlock);
@@ -2434,7 +2509,8 @@ public class Ec2Service {
         synchronized (lockFor(key(region, routeTableId))) {
             RouteTable current = getRequiredRouteTable(region, routeTableId);
             List<Route> next = new ArrayList<>(current.getRoutes());
-            next.removeIf(r -> Objects.equals(r.getDestinationCidrBlock(), destinationCidrBlock)
+            next.removeIf(r -> !"CreateRouteTable".equals(r.getOrigin())
+                    && Objects.equals(r.getDestinationCidrBlock(), destinationCidrBlock)
                     && Objects.equals(r.getDestinationIpv6CidrBlock(), destinationIpv6CidrBlock));
             current.setRoutes(next);
             routeTables.put(key(region, routeTableId), current);

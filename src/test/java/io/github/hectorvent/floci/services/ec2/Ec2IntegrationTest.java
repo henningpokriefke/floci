@@ -772,10 +772,22 @@ class Ec2IntegrationTest {
     @Test
     @Order(22)
     void associateAndDescribeSubnetIpv6CidrBlock() {
+        String subnetIpv6CidrBlock = ipv6VpcCidrBlock.replace("00::/56", "02::/64");
+        String ipv6SubnetId = given()
+            .formParam("Action", "CreateSubnet")
+            .formParam("VpcId", ipv6VpcId)
+            .formParam("CidrBlock", "10.1.2.0/24")
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .extract().path("CreateSubnetResponse.subnet.subnetId");
+
         subnetIpv6AssociationId = given()
             .formParam("Action", "AssociateSubnetCidrBlock")
-            .formParam("SubnetId", subnetId)
-            .formParam("Ipv6CidrBlock", "fd00:1234:5600:1::/64")
+            .formParam("SubnetId", ipv6SubnetId)
+            .formParam("Ipv6CidrBlock", subnetIpv6CidrBlock)
             .header("Authorization", AUTH_HEADER)
         .when()
             .post("/")
@@ -793,8 +805,44 @@ class Ec2IntegrationTest {
             .post("/")
         .then()
             .statusCode(200)
-            .body("DescribeSubnetsResponse.subnetSet.item.subnetId", equalTo(subnetId))
-            .body("DescribeSubnetsResponse.subnetSet.item.ipv6CidrBlockAssociationSet.item.ipv6CidrBlock", equalTo("fd00:1234:5600:1::/64"));
+            .body("DescribeSubnetsResponse.subnetSet.item.subnetId", equalTo(ipv6SubnetId))
+            .body("DescribeSubnetsResponse.subnetSet.item.ipv6CidrBlockAssociationSet.item.ipv6CidrBlock", equalTo(subnetIpv6CidrBlock));
+
+        given()
+            .formParam("Action", "DisassociateSubnetCidrBlock")
+            .formParam("AssociationId", subnetIpv6AssociationId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DisassociateSubnetCidrBlockResponse.ipv6CidrBlockAssociation.associationId",
+                    equalTo(subnetIpv6AssociationId));
+
+        given()
+            .formParam("Action", "DescribeSubnets")
+            .formParam("SubnetId.1", ipv6SubnetId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeSubnetsResponse.subnetSet.item.ipv6CidrBlockAssociationSet.item.size()", equalTo(0));
+    }
+
+    @Test
+    @Order(22)
+    void rejectSubnetIpv6CidrOutsideVpcAllocation() {
+        given()
+            .formParam("Action", "AssociateSubnetCidrBlock")
+            .formParam("SubnetId", subnetId)
+            .formParam("Ipv6CidrBlock", "fd00:1234:5600:1::/64")
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(400)
+            .body("Response.Errors.Error.Code", equalTo("InvalidParameterValue"));
     }
 
     @Test
@@ -1386,6 +1434,18 @@ class Ec2IntegrationTest {
             .post("/")
         .then()
             .statusCode(200);
+
+        given()
+            .formParam("Action", "CreateRoute")
+            .formParam("RouteTableId", routeTableId)
+            .formParam("DestinationIpv6CidrBlock", "::/0")
+            .formParam("GatewayId", igwId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(400)
+            .body("Response.Errors.Error.Code", equalTo("RouteAlreadyExists"));
 
         given()
             .formParam("Action", "DescribeRouteTables")

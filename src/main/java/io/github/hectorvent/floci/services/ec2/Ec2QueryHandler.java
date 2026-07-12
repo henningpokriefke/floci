@@ -79,6 +79,7 @@ public class Ec2QueryHandler {
                 case "DeleteSubnet" -> handleDeleteSubnet(params, region);
                 case "ModifySubnetAttribute" -> handleModifySubnetAttribute(params, region);
                 case "AssociateSubnetCidrBlock" -> handleAssociateSubnetCidrBlock(params, region);
+                case "DisassociateSubnetCidrBlock" -> handleDisassociateSubnetCidrBlock(params, region);
                 // Security Groups
                 case "CreateSecurityGroup" -> handleCreateSecurityGroup(params, region);
                 case "DescribeSecurityGroups" -> handleDescribeSecurityGroups(params, region);
@@ -1059,6 +1060,20 @@ public class Ec2QueryHandler {
                 .raw(subnetIpv6AssociationXml(association))
                 .end("ipv6CidrBlockAssociation")
                 .end("AssociateSubnetCidrBlockResponse");
+        return xmlResponse(xml.build());
+    }
+
+    private Response handleDisassociateSubnetCidrBlock(MultivaluedMap<String, String> p, String region) {
+        String associationId = p.getFirst("AssociationId");
+        SubnetIpv6CidrBlockAssociation association = service.disassociateSubnetCidrBlock(region, associationId);
+        XmlBuilder xml = new XmlBuilder()
+                .start("DisassociateSubnetCidrBlockResponse", AwsNamespaces.EC2)
+                .elem("requestId", UUID.randomUUID().toString())
+                .elem("subnetId", p.getFirst("SubnetId"))
+                .start("ipv6CidrBlockAssociation")
+                .raw(subnetIpv6AssociationXml(association))
+                .end("ipv6CidrBlockAssociation")
+                .end("DisassociateSubnetCidrBlockResponse");
         return xmlResponse(xml.build());
     }
 

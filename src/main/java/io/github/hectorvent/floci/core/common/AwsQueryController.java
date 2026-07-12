@@ -145,6 +145,7 @@ public class AwsQueryController {
             "DescribePrefixLists",
             "CreateDefaultVpc", "AssociateVpcCidrBlock", "DisassociateVpcCidrBlock",
             "CreateSubnet", "DescribeSubnets", "DeleteSubnet", "ModifySubnetAttribute", "AssociateSubnetCidrBlock",
+            "DisassociateSubnetCidrBlock",
             "CreateSecurityGroup", "DescribeSecurityGroups", "DeleteSecurityGroup",
             "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress",
             "RevokeSecurityGroupIngress", "RevokeSecurityGroupEgress",
