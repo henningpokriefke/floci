@@ -78,6 +78,7 @@ public class Ec2QueryHandler {
                 case "DescribeSubnets" -> handleDescribeSubnets(params, region);
                 case "DeleteSubnet" -> handleDeleteSubnet(params, region);
                 case "ModifySubnetAttribute" -> handleModifySubnetAttribute(params, region);
+                case "AssociateSubnetCidrBlock" -> handleAssociateSubnetCidrBlock(params, region);
                 // Security Groups
                 case "CreateSecurityGroup" -> handleCreateSecurityGroup(params, region);
                 case "DescribeSecurityGroups" -> handleDescribeSecurityGroups(params, region);
@@ -743,7 +744,8 @@ public class Ec2QueryHandler {
 
     private Response handleCreateVpc(MultivaluedMap<String, String> p, String region) {
         String cidrBlock = p.getFirst("CidrBlock");
-        Vpc vpc = service.createVpc(region, cidrBlock, false);
+        boolean amazonProvidedIpv6CidrBlock = Boolean.parseBoolean(p.getFirst("AmazonProvidedIpv6CidrBlock"));
+        Vpc vpc = service.createVpc(region, cidrBlock, false, amazonProvidedIpv6CidrBlock);
         List<Tag> vpcTags = new ArrayList<>();
         for (int i = 1; ; i++) {
             String resType = p.getFirst("TagSpecification." + i + ".ResourceType");
@@ -1014,8 +1016,9 @@ public class Ec2QueryHandler {
     private Response handleCreateSubnet(MultivaluedMap<String, String> p, String region) {
         String vpcId = p.getFirst("VpcId");
         String cidrBlock = p.getFirst("CidrBlock");
+        String ipv6CidrBlock = p.getFirst("Ipv6CidrBlock");
         String az = p.getFirst("AvailabilityZone");
-        Subnet subnet = service.createSubnet(region, vpcId, cidrBlock, az);
+        Subnet subnet = service.createSubnet(region, vpcId, cidrBlock, ipv6CidrBlock, az);
         applyResourceTags(p, region, "subnet", subnet.getSubnetId());
         XmlBuilder xml = new XmlBuilder()
                 .start("CreateSubnetResponse", AwsNamespaces.EC2)
@@ -1043,6 +1046,20 @@ public class Ec2QueryHandler {
     private Response handleDeleteSubnet(MultivaluedMap<String, String> p, String region) {
         service.deleteSubnet(region, p.getFirst("SubnetId"));
         return booleanResponse("DeleteSubnet");
+    }
+
+    private Response handleAssociateSubnetCidrBlock(MultivaluedMap<String, String> p, String region) {
+        SubnetIpv6CidrBlockAssociation association = service.associateSubnetCidrBlock(
+                region, p.getFirst("SubnetId"), p.getFirst("Ipv6CidrBlock"));
+        XmlBuilder xml = new XmlBuilder()
+                .start("AssociateSubnetCidrBlockResponse", AwsNamespaces.EC2)
+                .elem("requestId", UUID.randomUUID().toString())
+                .elem("subnetId", p.getFirst("SubnetId"))
+                .start("ipv6CidrBlockAssociation")
+                .raw(subnetIpv6AssociationXml(association))
+                .end("ipv6CidrBlockAssociation")
+                .end("AssociateSubnetCidrBlockResponse");
+        return xmlResponse(xml.build());
     }
 
     private Response handleModifySubnetAttribute(MultivaluedMap<String, String> p, String region) {
@@ -1476,16 +1493,26 @@ public class Ec2QueryHandler {
     private Response handleCreateRoute(MultivaluedMap<String, String> p, String region) {
         String rtId = p.getFirst("RouteTableId");
         String dest = p.getFirst("DestinationCidrBlock");
+        String destIpv6 = p.getFirst("DestinationIpv6CidrBlock");
         String gwId = p.getFirst("GatewayId");
         String natGwId = p.getFirst("NatGatewayId");
-        service.createRoute(region, rtId, dest, gwId, natGwId);
+        if (destIpv6 != null) {
+            service.createIpv6Route(region, rtId, destIpv6, gwId);
+        } else {
+            service.createRoute(region, rtId, dest, gwId, natGwId);
+        }
         return booleanResponse("CreateRoute");
     }
 
     private Response handleDeleteRoute(MultivaluedMap<String, String> p, String region) {
         String rtId = p.getFirst("RouteTableId");
         String dest = p.getFirst("DestinationCidrBlock");
-        service.deleteRoute(region, rtId, dest);
+        String destIpv6 = p.getFirst("DestinationIpv6CidrBlock");
+        if (destIpv6 != null) {
+            service.deleteIpv6Route(region, rtId, destIpv6);
+        } else {
+            service.deleteRoute(region, rtId, dest);
+        }
         return booleanResponse("DeleteRoute");
     }
 
@@ -2149,6 +2176,11 @@ public class Ec2QueryHandler {
                     .end("item");
         }
         xml.end("cidrBlockAssociationSet")
+                .start("ipv6CidrBlockAssociationSet");
+        for (VpcIpv6CidrBlockAssociation assoc : vpc.getIpv6CidrBlockAssociationSet()) {
+            xml.start("item").raw(vpcIpv6AssociationXml(assoc)).end("item");
+        }
+        xml.end("ipv6CidrBlockAssociationSet")
                 .raw(tagSetXml(vpc.getTags()));
         return xml.build();
     }
@@ -2168,10 +2200,35 @@ public class Ec2QueryHandler {
                 .elem("assignIpv6AddressOnCreation", String.valueOf(s.isAssignIpv6AddressOnCreation()))
                 .elem("enableDns64", String.valueOf(s.isEnableDns64()))
                 .elem("mapCustomerOwnedIpOnLaunch", String.valueOf(s.isMapCustomerOwnedIpOnLaunch()))
-                .start("ipv6CidrBlockAssociationSet").end("ipv6CidrBlockAssociationSet")
+                .start("ipv6CidrBlockAssociationSet");
+        for (SubnetIpv6CidrBlockAssociation assoc : s.getIpv6CidrBlockAssociationSet()) {
+            xml.start("item").raw(subnetIpv6AssociationXml(assoc)).end("item");
+        }
+        xml.end("ipv6CidrBlockAssociationSet")
                 .elem("ownerId", s.getOwnerId())
                 .raw(tagSetXml(s.getTags()));
         return xml.build();
+    }
+
+    private String vpcIpv6AssociationXml(VpcIpv6CidrBlockAssociation association) {
+        return new XmlBuilder()
+                .elem("associationId", association.getAssociationId())
+                .elem("ipv6CidrBlock", association.getIpv6CidrBlock())
+                .start("ipv6CidrBlockState").elem("state", association.getCidrBlockState()).end("ipv6CidrBlockState")
+                .elem("ipv6Pool", association.getIpv6Pool())
+                .elem("networkBorderGroup", association.getNetworkBorderGroup())
+                .elem("ipSource", association.getIpSource())
+                .build();
+    }
+
+    private String subnetIpv6AssociationXml(SubnetIpv6CidrBlockAssociation association) {
+        return new XmlBuilder()
+                .elem("associationId", association.getAssociationId())
+                .elem("ipv6CidrBlock", association.getIpv6CidrBlock())
+                .start("ipv6CidrBlockState").elem("state", association.getCidrBlockState()).end("ipv6CidrBlockState")
+                .elem("ipv6AddressAttribute", association.getIpv6AddressAttribute())
+                .elem("ipSource", association.getIpSource())
+                .build();
     }
 
     private String sgXml(SecurityGroup sg) {
@@ -2228,6 +2285,7 @@ public class Ec2QueryHandler {
         for (Route r : rt.getRoutes()) {
             xml.start("item")
                     .elem("destinationCidrBlock", r.getDestinationCidrBlock())
+                    .elem("destinationIpv6CidrBlock", r.getDestinationIpv6CidrBlock())
                     .elem("gatewayId", r.getGatewayId())
                     .elem("natGatewayId", r.getNatGatewayId())
                     .elem("state", r.getState())

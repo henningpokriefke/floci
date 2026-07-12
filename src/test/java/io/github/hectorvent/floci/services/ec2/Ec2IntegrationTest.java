@@ -39,7 +39,11 @@ class Ec2IntegrationTest {
 
     private static String instanceId;
     private static String vpcId;
+    private static String ipv6VpcId;
+    private static String ipv6VpcCidrBlock;
+    private static String vpcIpv6AssociationId;
     private static String subnetId;
+    private static String subnetIpv6AssociationId;
     private static String securityGroupId;
     private static String keyPairId;
     private static String igwId;
@@ -557,6 +561,72 @@ class Ec2IntegrationTest {
     }
 
     @Test
+    @Order(11)
+    void createAndDescribeVpcWithAmazonProvidedIpv6CidrBlock() {
+        var response = given()
+            .formParam("Action", "CreateVpc")
+            .formParam("CidrBlock", "10.1.0.0/16")
+            .formParam("AmazonProvidedIpv6CidrBlock", "true")
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("CreateVpcResponse.vpc.ipv6CidrBlockAssociationSet.item.ipv6CidrBlock", matchesRegex("2600:1f00:[0-9a-f]{4}:[0-9a-f]{2}00::/56"))
+            .extract();
+        ipv6VpcId = response.path("CreateVpcResponse.vpc.vpcId");
+        ipv6VpcCidrBlock = response.path("CreateVpcResponse.vpc.ipv6CidrBlockAssociationSet.item.ipv6CidrBlock");
+        vpcIpv6AssociationId = response.path("CreateVpcResponse.vpc.ipv6CidrBlockAssociationSet.item.associationId");
+
+        given()
+            .formParam("Action", "DescribeVpcs")
+            .formParam("Filter.1.Name", "ipv6-cidr-block-association.association-id")
+            .formParam("Filter.1.Value.1", vpcIpv6AssociationId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeVpcsResponse.vpcSet.item.vpcId", equalTo(ipv6VpcId))
+            .body("DescribeVpcsResponse.vpcSet.item.ipv6CidrBlockAssociationSet.item.ipv6Pool", equalTo("Amazon"))
+            .body("DescribeVpcsResponse.vpcSet.item.ipv6CidrBlockAssociationSet.item.networkBorderGroup", equalTo("us-east-1"))
+            .body("DescribeVpcsResponse.vpcSet.item.ipv6CidrBlockAssociationSet.item.ipSource", equalTo("amazon"));
+    }
+
+    @Test
+    @Order(12)
+    void createDualStackSubnet() {
+        String subnetIpv6CidrBlock = ipv6VpcCidrBlock.replace("00::/56", "01::/64");
+
+        given()
+            .formParam("Action", "CreateSubnet")
+            .formParam("VpcId", ipv6VpcId)
+            .formParam("CidrBlock", "10.1.1.0/24")
+            .formParam("Ipv6CidrBlock", subnetIpv6CidrBlock)
+            .formParam("AvailabilityZone", "us-east-1a")
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("CreateSubnetResponse.subnet.cidrBlock", equalTo("10.1.1.0/24"))
+            .body("CreateSubnetResponse.subnet.ipv6CidrBlockAssociationSet.item.ipv6CidrBlock", equalTo(subnetIpv6CidrBlock))
+            .body("CreateSubnetResponse.subnet.ipv6CidrBlockAssociationSet.item.ipv6AddressAttribute", equalTo("public"))
+            .body("CreateSubnetResponse.subnet.ipv6CidrBlockAssociationSet.item.ipSource", equalTo("amazon"));
+
+        given()
+            .formParam("Action", "DescribeRouteTables")
+            .formParam("Filter.1.Name", "vpc-id")
+            .formParam("Filter.1.Value.1", ipv6VpcId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeRouteTablesResponse.routeTableSet.item.routeSet.item.find { it.destinationIpv6CidrBlock == '" + ipv6VpcCidrBlock + "' }.gatewayId", equalTo("local"));
+    }
+
+    @Test
     @Order(12)
     void modifyVpcAttribute() {
         given()
@@ -697,6 +767,34 @@ class Ec2IntegrationTest {
             .body("DescribeSubnetsResponse.subnetSet.item.assignIpv6AddressOnCreation", equalTo("false"))
             .body("DescribeSubnetsResponse.subnetSet.item.enableDns64", equalTo("false"))
             .body("DescribeSubnetsResponse.subnetSet.item.mapCustomerOwnedIpOnLaunch", equalTo("false"));
+    }
+
+    @Test
+    @Order(22)
+    void associateAndDescribeSubnetIpv6CidrBlock() {
+        subnetIpv6AssociationId = given()
+            .formParam("Action", "AssociateSubnetCidrBlock")
+            .formParam("SubnetId", subnetId)
+            .formParam("Ipv6CidrBlock", "fd00:1234:5600:1::/64")
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("AssociateSubnetCidrBlockResponse.ipv6CidrBlockAssociation.ipv6CidrBlockState.state", equalTo("associated"))
+            .extract().path("AssociateSubnetCidrBlockResponse.ipv6CidrBlockAssociation.associationId");
+
+        given()
+            .formParam("Action", "DescribeSubnets")
+            .formParam("Filter.1.Name", "ipv6-cidr-block-association.association-id")
+            .formParam("Filter.1.Value.1", subnetIpv6AssociationId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeSubnetsResponse.subnetSet.item.subnetId", equalTo(subnetId))
+            .body("DescribeSubnetsResponse.subnetSet.item.ipv6CidrBlockAssociationSet.item.ipv6CidrBlock", equalTo("fd00:1234:5600:1::/64"));
     }
 
     @Test
@@ -1273,6 +1371,51 @@ class Ec2IntegrationTest {
             .post("/")
         .then()
             .statusCode(200);
+    }
+
+    @Test
+    @Order(61)
+    void createIpv6RouteRoundTrips() {
+        given()
+            .formParam("Action", "CreateRoute")
+            .formParam("RouteTableId", routeTableId)
+            .formParam("DestinationIpv6CidrBlock", "::/0")
+            .formParam("GatewayId", igwId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        given()
+            .formParam("Action", "DescribeRouteTables")
+            .formParam("RouteTableId.1", routeTableId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeRouteTablesResponse.routeTableSet.item.routeSet.item.find { it.destinationIpv6CidrBlock == '::/0' }.gatewayId", equalTo(igwId));
+
+        given()
+            .formParam("Action", "DeleteRoute")
+            .formParam("RouteTableId", routeTableId)
+            .formParam("DestinationIpv6CidrBlock", "::/0")
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        given()
+            .formParam("Action", "DescribeRouteTables")
+            .formParam("RouteTableId.1", routeTableId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeRouteTablesResponse.routeTableSet.item.routeSet.item.findAll { it.destinationIpv6CidrBlock == '::/0' }.size()", equalTo(0));
     }
 
     @Test

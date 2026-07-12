@@ -64,11 +64,13 @@ import io.github.hectorvent.floci.services.ec2.model.SecurityGroup;
 import io.github.hectorvent.floci.services.ec2.model.SecurityGroupRule;
 import io.github.hectorvent.floci.services.ec2.model.Snapshot;
 import io.github.hectorvent.floci.services.ec2.model.Subnet;
+import io.github.hectorvent.floci.services.ec2.model.SubnetIpv6CidrBlockAssociation;
 import io.github.hectorvent.floci.services.ec2.model.Tag;
 import io.github.hectorvent.floci.services.ec2.model.Volume;
 import io.github.hectorvent.floci.services.ec2.model.VolumeAttachment;
 import io.github.hectorvent.floci.services.ec2.model.Vpc;
 import io.github.hectorvent.floci.services.ec2.model.VpcCidrBlockAssociation;
+import io.github.hectorvent.floci.services.ec2.model.VpcIpv6CidrBlockAssociation;
 import io.github.hectorvent.floci.services.ec2.model.VpcEndpoint;
 import jakarta.annotation.PostConstruct;
 import io.github.hectorvent.floci.services.ec2.model.LaunchSpecification;
@@ -342,6 +344,7 @@ public class Ec2Service {
         mainRt.setOwnerId(accountId);
         mainRt.setRegion(region);
         mainRt.getRoutes().add(new Route(vpc.getCidrBlock(), "local", "CreateRouteTable"));
+        addIpv6LocalRoutes(mainRt, vpc);
 
         RouteTableAssociation mainAssoc = new RouteTableAssociation();
         mainAssoc.setRouteTableAssociationId(associationId);
@@ -352,6 +355,14 @@ public class Ec2Service {
 
         routeTables.put(key(region, routeTableId), mainRt);
         return routeTableId;
+    }
+
+    private void addIpv6LocalRoutes(RouteTable routeTable, Vpc vpc) {
+        for (VpcIpv6CidrBlockAssociation association : vpc.getIpv6CidrBlockAssociationSet()) {
+            Route route = new Route(null, "local", "CreateRouteTable");
+            route.setDestinationIpv6CidrBlock(association.getIpv6CidrBlock());
+            routeTable.getRoutes().add(route);
+        }
     }
 
     private NetworkAclEntry naclEntry(int ruleNumber, String protocol, String action, boolean egress, String cidr) {
@@ -1059,6 +1070,10 @@ public class Ec2Service {
     // ─── VPCs ──────────────────────────────────────────────────────────────────
 
     public Vpc createVpc(String region, String cidrBlock, boolean isDefault) {
+        return createVpc(region, cidrBlock, isDefault, false);
+    }
+
+    public Vpc createVpc(String region, String cidrBlock, boolean isDefault, boolean amazonProvidedIpv6CidrBlock) {
         ensureDefaultResources(region);
         String vpcId = "vpc-" + randomHex(8);
         Vpc vpc = new Vpc();
@@ -1070,12 +1085,23 @@ public class Ec2Service {
         vpc.setRegion(region);
         vpc.getCidrBlockAssociationSet().add(
                 new VpcCidrBlockAssociation("vpc-cidr-assoc-" + randomHex(8), cidrBlock));
+        if (amazonProvidedIpv6CidrBlock) {
+            VpcIpv6CidrBlockAssociation association = new VpcIpv6CidrBlockAssociation(
+                    "vpc-cidr-assoc-" + randomHex(8), generatedIpv6CidrBlock(vpcId));
+            association.setNetworkBorderGroup(region);
+            vpc.getIpv6CidrBlockAssociationSet().add(association);
+        }
         vpcs.put(key(region, vpcId), vpc);
 
         createDefaultSecurityGroup(region, vpcId, "sg-" + randomHex(17));
         createMainRouteTable(region, vpc, "rtb-" + randomHex(17), "rtbassoc-" + randomHex(17));
         createDefaultNetworkAcl(region, vpcId, "acl-" + randomHex(17));
         return vpc;
+    }
+
+    private String generatedIpv6CidrBlock(String vpcId) {
+        String suffix = vpcId.substring("vpc-".length());
+        return "2600:1f00:" + suffix.substring(0, 4) + ":" + suffix.substring(4, 6) + "00::/56";
     }
 
     public List<Vpc> describeVpcs(String region, List<String> vpcIds, Map<String, List<String>> filters) {
@@ -1273,6 +1299,11 @@ public class Ec2Service {
     // ─── Subnets ───────────────────────────────────────────────────────────────
 
     public Subnet createSubnet(String region, String vpcId, String cidrBlock, String availabilityZone) {
+        return createSubnet(region, vpcId, cidrBlock, null, availabilityZone);
+    }
+
+    public Subnet createSubnet(String region, String vpcId, String cidrBlock, String ipv6CidrBlock,
+                               String availabilityZone) {
         ensureDefaultResources(region);
         getRequiredVpc(region, vpcId);
 
@@ -1288,6 +1319,10 @@ public class Ec2Service {
         subnet.setOwnerId(accountId);
         subnet.setRegion(region);
         subnet.setSubnetArn(AwsArnUtils.Arn.of("ec2", region, accountId, "subnet/" + subnetId).toString());
+        if (ipv6CidrBlock != null) {
+            subnet.getIpv6CidrBlockAssociationSet().add(new SubnetIpv6CidrBlockAssociation(
+                    "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock));
+        }
         subnets.put(key(region, subnetId), subnet);
 
         // Every subnet starts associated with its VPC's default NACL. ReplaceNetworkAclAssociation
@@ -1311,6 +1346,16 @@ public class Ec2Service {
                 .filter(s -> subnetIds.isEmpty() || subnetIds.contains(s.getSubnetId()))
                 .filter(s -> matchesFilters(s, filters, region))
                 .collect(Collectors.toList());
+    }
+
+    public SubnetIpv6CidrBlockAssociation associateSubnetCidrBlock(
+            String region, String subnetId, String ipv6CidrBlock) {
+        Subnet subnet = requireSubnet(region, subnetId);
+        SubnetIpv6CidrBlockAssociation association = new SubnetIpv6CidrBlockAssociation(
+                "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock);
+        subnet.getIpv6CidrBlockAssociationSet().add(association);
+        subnets.put(key(region, subnetId), subnet);
+        return association;
     }
 
     public void deleteSubnet(String region, String subnetId) {
@@ -2282,6 +2327,7 @@ public class Ec2Service {
         rt.setOwnerId(accountId);
         rt.setRegion(region);
         rt.getRoutes().add(new Route(vpc.getCidrBlock(), "local", "CreateRouteTable"));
+        addIpv6LocalRoutes(rt, vpc);
         routeTables.put(key(region, rtId), rt);
         return rt;
     }
@@ -2349,12 +2395,24 @@ public class Ec2Service {
         }
     }
 
-    public void createRoute(String region, String routeTableId, String destinationCidrBlock, String gatewayId, String natGatewayId) {
+    public void createRoute(String region, String routeTableId, String destinationCidrBlock,
+                            String gatewayId, String natGatewayId) {
+        createRoute(region, routeTableId, destinationCidrBlock, null, gatewayId, natGatewayId);
+    }
+
+    public void createIpv6Route(String region, String routeTableId, String destinationIpv6CidrBlock,
+                                String gatewayId) {
+        createRoute(region, routeTableId, null, destinationIpv6CidrBlock, gatewayId, null);
+    }
+
+    private void createRoute(String region, String routeTableId, String destinationCidrBlock,
+                             String destinationIpv6CidrBlock, String gatewayId, String natGatewayId) {
         ensureDefaultResources(region);
         synchronized (lockFor(key(region, routeTableId))) {
             RouteTable current = getRequiredRouteTable(region, routeTableId);
             List<Route> next = new ArrayList<>(current.getRoutes());
             Route route = new Route(destinationCidrBlock, gatewayId, "CreateRoute");
+            route.setDestinationIpv6CidrBlock(destinationIpv6CidrBlock);
             route.setNatGatewayId(natGatewayId);
             next.add(route);
             current.setRoutes(next);
@@ -2363,11 +2421,21 @@ public class Ec2Service {
     }
 
     public void deleteRoute(String region, String routeTableId, String destinationCidrBlock) {
+        deleteRoute(region, routeTableId, destinationCidrBlock, null);
+    }
+
+    public void deleteIpv6Route(String region, String routeTableId, String destinationIpv6CidrBlock) {
+        deleteRoute(region, routeTableId, null, destinationIpv6CidrBlock);
+    }
+
+    private void deleteRoute(String region, String routeTableId, String destinationCidrBlock,
+                             String destinationIpv6CidrBlock) {
         ensureDefaultResources(region);
         synchronized (lockFor(key(region, routeTableId))) {
             RouteTable current = getRequiredRouteTable(region, routeTableId);
             List<Route> next = new ArrayList<>(current.getRoutes());
-            next.removeIf(r -> r.getDestinationCidrBlock().equals(destinationCidrBlock));
+            next.removeIf(r -> Objects.equals(r.getDestinationCidrBlock(), destinationCidrBlock)
+                    && Objects.equals(r.getDestinationIpv6CidrBlock(), destinationIpv6CidrBlock));
             current.setRoutes(next);
             routeTables.put(key(region, routeTableId), current);
         }
@@ -2665,6 +2733,8 @@ public class Ec2Service {
                 case "state" -> matchesValue(values, vpc.getState());
                 case "isDefault", "is-default" -> matchesValue(values, String.valueOf(vpc.isDefault()));
                 case "cidr" -> matchesValue(values, vpc.getCidrBlock());
+                case "ipv6-cidr-block-association.association-id" -> vpc.getIpv6CidrBlockAssociationSet().stream()
+                        .anyMatch(association -> matchesValue(values, association.getAssociationId()));
                 default -> true;
             };
         }
@@ -2674,6 +2744,8 @@ public class Ec2Service {
                 case "vpc-id" -> matchesValue(values, subnet.getVpcId());
                 case "state" -> matchesValue(values, subnet.getState());
                 case "availabilityZone", "availability-zone" -> matchesValue(values, subnet.getAvailabilityZone());
+                case "ipv6-cidr-block-association.association-id" -> subnet.getIpv6CidrBlockAssociationSet().stream()
+                        .anyMatch(association -> matchesValue(values, association.getAssociationId()));
                 default -> true;
             };
         }
