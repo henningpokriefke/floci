@@ -2366,7 +2366,8 @@ public class Ec2QueryHandler {
                     .elem("protocol", e.getProtocol())
                     .elem("ruleAction", e.getRuleAction())
                     .elem("egress", String.valueOf(e.isEgress()))
-                    .elem("cidrBlock", e.getCidrBlock());
+                    .elem("cidrBlock", e.getCidrBlock())
+                    .elem("ipv6CidrBlock", e.getIpv6CidrBlock());
             if (e.getPortRangeFrom() != null || e.getPortRangeTo() != null) {
                 xml.start("portRange")
                         .elem("from", String.valueOf(e.getPortRangeFrom()))

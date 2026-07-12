@@ -13,6 +13,7 @@ import io.github.hectorvent.floci.services.ec2.model.GroupIdentifier;
 import io.github.hectorvent.floci.services.ec2.model.Instance;
 import io.github.hectorvent.floci.services.ec2.model.LaunchTemplate;
 import io.github.hectorvent.floci.services.ec2.model.NetworkInterface;
+import io.github.hectorvent.floci.services.ec2.model.NetworkAcl;
 import io.github.hectorvent.floci.services.ec2.model.Reservation;
 import io.github.hectorvent.floci.services.ec2.model.SecurityGroup;
 import io.github.hectorvent.floci.services.ec2.model.Snapshot;
@@ -44,6 +45,8 @@ class Ec2ServiceTest {
         var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false, true);
         var association = vpc.getIpv6CidrBlockAssociationSet().getFirst();
 
+        assertIpv6DefaultNetworkRules(service, "us-east-1", vpc.getVpcId());
+
         var disassociation = service.disassociateVpcCidrBlock("us-east-1", association.getAssociationId());
 
         assertEquals(vpc.getVpcId(), disassociation.vpcId());
@@ -67,6 +70,7 @@ class Ec2ServiceTest {
 
         var association = service.associateVpcIpv6CidrBlock("us-east-1", vpc.getVpcId());
 
+        assertIpv6DefaultNetworkRules(service, "us-east-1", vpc.getVpcId());
         assertEquals(association.getAssociationId(), service.describeVpcs(
                 "us-east-1", List.of(vpc.getVpcId()), Map.of())
                 .getFirst().getIpv6CidrBlockAssociationSet().getFirst().getAssociationId());
@@ -390,6 +394,21 @@ class Ec2ServiceTest {
         mapping.setDeviceName("/dev/sda1");
         mapping.setEbs(ebs);
         return mapping;
+    }
+
+    private static void assertIpv6DefaultNetworkRules(Ec2Service service, String region, String vpcId) {
+        SecurityGroup defaultGroup = service.describeSecurityGroups(region, List.of(), List.of("default"), Map.of())
+                .stream().filter(group -> vpcId.equals(group.getVpcId())).findFirst().orElseThrow();
+        assertTrue(defaultGroup.getIpPermissionsEgress().stream()
+                .flatMap(permission -> permission.getIpv6Ranges().stream())
+                .anyMatch(range -> "::/0".equals(range.getCidrIpv6())));
+
+        NetworkAcl defaultAcl = service.describeNetworkAcls(region, List.of(), Map.of()).stream()
+                .filter(acl -> acl.isDefault() && vpcId.equals(acl.getVpcId())).findFirst().orElseThrow();
+        assertTrue(defaultAcl.getEntries().stream().anyMatch(entry -> !entry.isEgress()
+                && entry.getRuleNumber() == 101 && "::/0".equals(entry.getIpv6CidrBlock())));
+        assertTrue(defaultAcl.getEntries().stream().anyMatch(entry -> entry.isEgress()
+                && entry.getRuleNumber() == 101 && "::/0".equals(entry.getIpv6CidrBlock())));
     }
 
     private static EmulatorConfig mockConfig(boolean ec2Mock) {

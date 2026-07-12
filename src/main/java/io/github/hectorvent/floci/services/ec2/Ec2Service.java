@@ -50,6 +50,7 @@ import io.github.hectorvent.floci.services.ec2.model.InternetGateway;
 import io.github.hectorvent.floci.services.ec2.model.InternetGatewayAttachment;
 import io.github.hectorvent.floci.services.ec2.model.IpPermission;
 import io.github.hectorvent.floci.services.ec2.model.IpRange;
+import io.github.hectorvent.floci.services.ec2.model.Ipv6Range;
 import io.github.hectorvent.floci.services.ec2.model.KeyPair;
 import io.github.hectorvent.floci.services.ec2.model.LaunchTemplate;
 import io.github.hectorvent.floci.services.ec2.model.LaunchTemplateData;
@@ -335,6 +336,9 @@ public class Ec2Service {
         IpPermission egressAll = new IpPermission();
         egressAll.setIpProtocol("-1");
         egressAll.getIpRanges().add(new IpRange("0.0.0.0/0"));
+        if (!getRequiredVpc(region, vpcId).getIpv6CidrBlockAssociationSet().isEmpty()) {
+            egressAll.getIpv6Ranges().add(new Ipv6Range("::/0"));
+        }
         defaultSg.getIpPermissionsEgress().add(egressAll);
         securityGroups.put(key(region, securityGroupId), defaultSg);
         // Persist the default egress rule as a SecurityGroupRule so that
@@ -380,6 +384,12 @@ public class Ec2Service {
         return entry;
     }
 
+    private NetworkAclEntry ipv6NaclEntry(int ruleNumber, String action, boolean egress) {
+        NetworkAclEntry entry = naclEntry(ruleNumber, "-1", action, egress, null);
+        entry.setIpv6CidrBlock("::/0");
+        return entry;
+    }
+
     // The default NACL allows all traffic (rule 100) and ends with the implicit deny (32767),
     // for both ingress and egress — matching what AWS provisions with every VPC.
     private String createDefaultNetworkAcl(String region, String vpcId, String networkAclId) {
@@ -393,6 +403,12 @@ public class Ec2Service {
         acl.getEntries().add(naclEntry(32767, "-1", "deny", false, "0.0.0.0/0"));
         acl.getEntries().add(naclEntry(100, "-1", "allow", true, "0.0.0.0/0"));
         acl.getEntries().add(naclEntry(32767, "-1", "deny", true, "0.0.0.0/0"));
+        if (!getRequiredVpc(region, vpcId).getIpv6CidrBlockAssociationSet().isEmpty()) {
+            acl.getEntries().add(ipv6NaclEntry(101, "allow", false));
+            acl.getEntries().add(ipv6NaclEntry(32767, "deny", false));
+            acl.getEntries().add(ipv6NaclEntry(101, "allow", true));
+            acl.getEntries().add(ipv6NaclEntry(32767, "deny", true));
+        }
         networkAcls.put(key(region, networkAclId), acl);
         return networkAclId;
     }
@@ -1191,7 +1207,49 @@ public class Ec2Service {
             vpc.setIpv6CidrBlockAssociationSet(associations);
             vpcs.put(key(region, vpcId), vpc);
             addVpcIpv6LocalRoutes(region, vpcId, association.getIpv6CidrBlock());
+            addVpcIpv6DefaultNetworkRules(region, vpcId);
             return association;
+        }
+    }
+
+    private void addVpcIpv6DefaultNetworkRules(String region, String vpcId) {
+        for (SecurityGroup securityGroup : securityGroups.scan(k -> true)) {
+            if (!region.equals(securityGroup.getRegion()) || !vpcId.equals(securityGroup.getVpcId())) continue;
+            synchronized (lockFor(key(region, securityGroup.getGroupId()))) {
+                SecurityGroup current = getRequiredSecurityGroup(region, securityGroup.getGroupId());
+                Optional<IpPermission> defaultEgress = current.getIpPermissionsEgress().stream()
+                        .filter(permission -> "-1".equals(permission.getIpProtocol()))
+                        .filter(permission -> permission.getIpRanges().stream()
+                                .anyMatch(range -> "0.0.0.0/0".equals(range.getCidrIp())))
+                        .findFirst();
+                if (defaultEgress.isPresent() && defaultEgress.get().getIpv6Ranges().stream()
+                        .noneMatch(range -> "::/0".equals(range.getCidrIpv6()))) {
+                    defaultEgress.get().getIpv6Ranges().add(new Ipv6Range("::/0"));
+                    securityGroups.put(key(region, current.getGroupId()), current);
+                    IpPermission ipv6Egress = new IpPermission();
+                    ipv6Egress.setIpProtocol("-1");
+                    ipv6Egress.getIpv6Ranges().add(new Ipv6Range("::/0"));
+                    createRules(region, current.getGroupId(), ipv6Egress, true);
+                }
+            }
+        }
+        NetworkAcl defaultAcl = findDefaultNetworkAcl(region, vpcId);
+        if (defaultAcl == null) return;
+        synchronized (lockFor(key(region, defaultAcl.getNetworkAclId()))) {
+            List<NetworkAclEntry> entries = new ArrayList<>(defaultAcl.getEntries());
+            for (boolean egress : List.of(false, true)) {
+                boolean originalAllowExists = entries.stream().anyMatch(entry -> entry.isEgress() == egress
+                        && entry.getRuleNumber() == 100 && "allow".equals(entry.getRuleAction())
+                        && "0.0.0.0/0".equals(entry.getCidrBlock()));
+                boolean ipv6AllowExists = entries.stream().anyMatch(entry -> entry.isEgress() == egress
+                        && entry.getRuleNumber() == 101 && "::/0".equals(entry.getIpv6CidrBlock()));
+                if (originalAllowExists && !ipv6AllowExists) entries.add(ipv6NaclEntry(101, "allow", egress));
+                boolean ipv6DenyExists = entries.stream().anyMatch(entry -> entry.isEgress() == egress
+                        && entry.getRuleNumber() == 32767 && "::/0".equals(entry.getIpv6CidrBlock()));
+                if (!ipv6DenyExists) entries.add(ipv6NaclEntry(32767, "deny", egress));
+            }
+            defaultAcl.setEntries(entries);
+            networkAcls.put(key(region, defaultAcl.getNetworkAclId()), defaultAcl);
         }
     }
 

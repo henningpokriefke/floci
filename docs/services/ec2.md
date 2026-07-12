@@ -160,7 +160,9 @@ SDK, Terraform, and OpenTofu clients:
 
 1. Create a VPC with `AmazonProvidedIpv6CidrBlock=true`. Floci assigns a unique
    public `/56` IPv6 CIDR within the region and returns the allocation metadata
-   expected by AWS clients.
+   expected by AWS clients. As AWS does, Floci adds IPv6 allow-all egress to
+   security groups whose original default egress is still present and IPv6 rules
+   to the unmodified directions of the default network ACL.
 2. Create a dual-stack subnet with both `CidrBlock` and `Ipv6CidrBlock`, or associate
    a `/64` with an existing subnet using `AssociateSubnetCidrBlock`. The `/64` must
    be contained by the parent VPC's IPv6 `/56`; IPv4-only VPCs reject IPv6 subnet
