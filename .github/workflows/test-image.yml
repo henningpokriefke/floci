@@ -1,9 +1,6 @@
 name: Build test image
 
 on:
-  push:
-    branches:
-      - feat/ec2-dual-stack-vpc
   workflow_dispatch:
 
 permissions:
