@@ -8,8 +8,8 @@ permissions:
   packages: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-tina-1395
+  cancel-in-progress: false
 
 jobs:
   image:
