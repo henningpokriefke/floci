@@ -1020,8 +1020,26 @@ public class Ec2QueryHandler {
 
     private Response handleDisassociateVpcCidrBlock(MultivaluedMap<String, String> p, String region) {
         String associationId = p.getFirst("AssociationId");
-        service.disassociateVpcCidrBlock(region, associationId);
-        return booleanResponse("DisassociateVpcCidrBlock");
+        VpcCidrBlockDisassociation disassociation = service.disassociateVpcCidrBlock(region, associationId);
+        XmlBuilder xml = new XmlBuilder()
+                .start("DisassociateVpcCidrBlockResponse", AwsNamespaces.EC2)
+                .elem("requestId", UUID.randomUUID().toString())
+                .elem("vpcId", disassociation.vpcId());
+        if (disassociation.ipv4Association() != null) {
+            VpcCidrBlockAssociation association = disassociation.ipv4Association();
+            xml.start("cidrBlockAssociation")
+                    .elem("associationId", association.getAssociationId())
+                    .elem("cidrBlock", association.getCidrBlock())
+                    .start("cidrBlockState").elem("state", association.getCidrBlockState()).end("cidrBlockState")
+                    .end("cidrBlockAssociation");
+        }
+        if (disassociation.ipv6Association() != null) {
+            xml.start("ipv6CidrBlockAssociation")
+                    .raw(vpcIpv6AssociationXml(disassociation.ipv6Association()))
+                    .end("ipv6CidrBlockAssociation");
+        }
+        xml.end("DisassociateVpcCidrBlockResponse");
+        return xmlResponse(xml.build());
     }
 
     // ─── Subnet handlers ──────────────────────────────────────────────────────

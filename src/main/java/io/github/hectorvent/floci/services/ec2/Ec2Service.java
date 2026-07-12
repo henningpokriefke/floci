@@ -74,6 +74,7 @@ import io.github.hectorvent.floci.services.ec2.model.Volume;
 import io.github.hectorvent.floci.services.ec2.model.VolumeAttachment;
 import io.github.hectorvent.floci.services.ec2.model.Vpc;
 import io.github.hectorvent.floci.services.ec2.model.VpcCidrBlockAssociation;
+import io.github.hectorvent.floci.services.ec2.model.VpcCidrBlockDisassociation;
 import io.github.hectorvent.floci.services.ec2.model.VpcIpv6CidrBlockAssociation;
 import io.github.hectorvent.floci.services.ec2.model.VpcEndpoint;
 import jakarta.annotation.PostConstruct;
@@ -1210,7 +1211,7 @@ public class Ec2Service {
         }
     }
 
-    public void disassociateVpcCidrBlock(String region, String associationId) {
+    public VpcCidrBlockDisassociation disassociateVpcCidrBlock(String region, String associationId) {
         ensureDefaultResources(region);
         for (Vpc vpc : vpcs.scan(k -> true)) {
             if (vpc.getRegion().equals(region)) {
@@ -1224,6 +1225,13 @@ public class Ec2Service {
                             .filter(association -> association.getAssociationId().equals(associationId))
                             .map(VpcIpv6CidrBlockAssociation::getIpv6CidrBlock)
                             .toList();
+                    VpcCidrBlockAssociation removedIpv4Association = ipv4Associations.stream()
+                            .filter(association -> association.getAssociationId().equals(associationId))
+                            .findFirst().orElse(null);
+                    VpcIpv6CidrBlockAssociation removedIpv6Association = ipv6Associations.stream()
+                            .filter(association -> association.getAssociationId().equals(associationId))
+                            .findFirst().orElse(null);
+                    if (removedIpv4Association == null && removedIpv6Association == null) continue;
                     if (removedIpv6Cidrs.stream().anyMatch(
                             cidrBlock -> subnetUsesVpcIpv6Cidr(region, current.getVpcId(), cidrBlock))) {
                         throw new AwsException("DependencyViolation",
@@ -1235,9 +1243,19 @@ public class Ec2Service {
                     current.setIpv6CidrBlockAssociationSet(ipv6Associations);
                     vpcs.put(key(region, current.getVpcId()), current);
                     removeVpcIpv6LocalRoutes(region, current.getVpcId(), removedIpv6Cidrs);
+                    if (removedIpv4Association != null) {
+                        removedIpv4Association.setCidrBlockState("disassociating");
+                    }
+                    if (removedIpv6Association != null) {
+                        removedIpv6Association.setCidrBlockState("disassociating");
+                    }
+                    return new VpcCidrBlockDisassociation(
+                            current.getVpcId(), removedIpv4Association, removedIpv6Association);
                 }
             }
         }
+        throw new AwsException("InvalidVpcCidrBlockAssociationID.NotFound",
+                "The VPC CIDR association ID '" + associationId + "' does not exist", 400);
     }
 
     private boolean subnetUsesVpcIpv6Cidr(String region, String vpcId, String vpcCidrBlock) {
@@ -1477,6 +1495,7 @@ public class Ec2Service {
                     next.removeIf(candidate -> candidate.getAssociationId().equals(associationId));
                     current.setIpv6CidrBlockAssociationSet(next);
                     subnets.put(key(region, current.getSubnetId()), current);
+                    association.get().setCidrBlockState("disassociating");
                     return new SubnetIpv6CidrBlockDisassociation(current.getSubnetId(), association.get());
                 }
             }

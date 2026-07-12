@@ -44,8 +44,11 @@ class Ec2ServiceTest {
         var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false, true);
         var association = vpc.getIpv6CidrBlockAssociationSet().getFirst();
 
-        service.disassociateVpcCidrBlock("us-east-1", association.getAssociationId());
+        var disassociation = service.disassociateVpcCidrBlock("us-east-1", association.getAssociationId());
 
+        assertEquals(vpc.getVpcId(), disassociation.vpcId());
+        assertEquals(association.getAssociationId(), disassociation.ipv6Association().getAssociationId());
+        assertEquals("disassociating", disassociation.ipv6Association().getCidrBlockState());
         assertTrue(service.describeVpcs("us-east-1", List.of(vpc.getVpcId()), Map.of())
                 .getFirst().getIpv6CidrBlockAssociationSet().isEmpty());
         assertTrue(service.describeRouteTables("us-east-1", List.of(), Map.of()).stream()

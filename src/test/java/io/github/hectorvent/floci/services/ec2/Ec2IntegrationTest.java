@@ -606,7 +606,7 @@ class Ec2IntegrationTest {
             .statusCode(200)
             .extract().path("CreateVpcResponse.vpc.vpcId");
 
-        given()
+        String associationId = given()
             .formParam("Action", "AssociateVpcCidrBlock")
             .formParam("VpcId", existingVpcId)
             .formParam("AmazonProvidedIpv6CidrBlock", "true")
@@ -618,7 +618,22 @@ class Ec2IntegrationTest {
             .body("AssociateVpcCidrBlockResponse.vpcId", equalTo(existingVpcId))
             .body("AssociateVpcCidrBlockResponse.ipv6CidrBlockAssociation.ipv6CidrBlock",
                     matchesRegex("2600:1f00:[0-9a-f]{4}:[0-9a-f]{2}00::/56"))
-            .body("AssociateVpcCidrBlockResponse.ipv6CidrBlockAssociation.ipv6Pool", equalTo("Amazon"));
+            .body("AssociateVpcCidrBlockResponse.ipv6CidrBlockAssociation.ipv6Pool", equalTo("Amazon"))
+            .extract().path("AssociateVpcCidrBlockResponse.ipv6CidrBlockAssociation.associationId");
+
+        given()
+            .formParam("Action", "DisassociateVpcCidrBlock")
+            .formParam("AssociationId", associationId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DisassociateVpcCidrBlockResponse.vpcId", equalTo(existingVpcId))
+            .body("DisassociateVpcCidrBlockResponse.ipv6CidrBlockAssociation.associationId",
+                    equalTo(associationId))
+            .body("DisassociateVpcCidrBlockResponse.ipv6CidrBlockAssociation.ipv6CidrBlockState.state",
+                    equalTo("disassociating"));
     }
 
     @Test
@@ -867,7 +882,9 @@ class Ec2IntegrationTest {
             .statusCode(200)
             .body("DisassociateSubnetCidrBlockResponse.subnetId", equalTo(ipv6SubnetId))
             .body("DisassociateSubnetCidrBlockResponse.ipv6CidrBlockAssociation.associationId",
-                    equalTo(subnetIpv6AssociationId));
+                    equalTo(subnetIpv6AssociationId))
+            .body("DisassociateSubnetCidrBlockResponse.ipv6CidrBlockAssociation.ipv6CidrBlockState.state",
+                    equalTo("disassociating"));
 
         given()
             .formParam("Action", "DescribeSubnets")
