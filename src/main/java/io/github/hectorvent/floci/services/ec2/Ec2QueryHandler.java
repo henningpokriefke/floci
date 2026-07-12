@@ -1065,13 +1065,14 @@ public class Ec2QueryHandler {
 
     private Response handleDisassociateSubnetCidrBlock(MultivaluedMap<String, String> p, String region) {
         String associationId = p.getFirst("AssociationId");
-        SubnetIpv6CidrBlockAssociation association = service.disassociateSubnetCidrBlock(region, associationId);
+        SubnetIpv6CidrBlockDisassociation disassociation =
+                service.disassociateSubnetCidrBlock(region, associationId);
         XmlBuilder xml = new XmlBuilder()
                 .start("DisassociateSubnetCidrBlockResponse", AwsNamespaces.EC2)
                 .elem("requestId", UUID.randomUUID().toString())
-                .elem("subnetId", p.getFirst("SubnetId"))
+                .elem("subnetId", disassociation.subnetId())
                 .start("ipv6CidrBlockAssociation")
-                .raw(subnetIpv6AssociationXml(association))
+                .raw(subnetIpv6AssociationXml(disassociation.association()))
                 .end("ipv6CidrBlockAssociation")
                 .end("DisassociateSubnetCidrBlockResponse");
         return xmlResponse(xml.build());

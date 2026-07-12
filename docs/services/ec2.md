@@ -164,7 +164,7 @@ SDK, Terraform, and OpenTofu clients:
 2. Create a dual-stack subnet with both `CidrBlock` and `Ipv6CidrBlock`, or associate
    a `/64` with an existing subnet using `AssociateSubnetCidrBlock`. The `/64` must
    be contained by the parent VPC's IPv6 `/56`; IPv4-only VPCs reject IPv6 subnet
-   associations. Remove a separately managed association with
+   associations, and a subnet can have only one IPv6 CIDR association. Remove a separately managed association with
    `DisassociateSubnetCidrBlock`.
 3. Create and delete routes using `DestinationIpv6CidrBlock`. Route tables for a
    dual-stack VPC include protected IPv4 and IPv6 local routes. Creating a second

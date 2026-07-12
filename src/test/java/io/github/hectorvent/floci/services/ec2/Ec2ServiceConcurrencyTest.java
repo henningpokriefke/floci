@@ -85,17 +85,26 @@ class Ec2ServiceConcurrencyTest {
                     .getSubnetId();
             String vpcIpv6Cidr = vpc.getIpv6CidrBlockAssociationSet().getFirst().getIpv6CidrBlock();
 
-            Set<String> returnedIds = runRace(i -> service.associateSubnetCidrBlock(
-                    region, subnetId, vpcIpv6Cidr.replace("00::/56", String.format("%02x::/64", i + 1)))
-                    .getAssociationId());
+            AtomicInteger associated = new AtomicInteger();
+            AtomicInteger alreadyAssociated = new AtomicInteger();
+            runRaceAllowing(i -> {
+                try {
+                    service.associateSubnetCidrBlock(
+                            region, subnetId,
+                            vpcIpv6Cidr.replace("00::/56", String.format("%02x::/64", i + 1)));
+                    associated.incrementAndGet();
+                } catch (AwsException exception) {
+                    assertEquals("Resource.AlreadyAssociated", exception.getErrorCode());
+                    alreadyAssociated.incrementAndGet();
+                }
+            });
 
             Subnet subnet = service.describeSubnets(region, List.of(subnetId), Map.of()).getFirst();
-            assertEquals(N, subnet.getIpv6CidrBlockAssociationSet().size(),
-                    "trial " + trial + ": lost subnet IPv6 associations");
-            Set<String> storedIds = subnet.getIpv6CidrBlockAssociationSet().stream()
-                    .map(a -> a.getAssociationId())
-                    .collect(Collectors.toSet());
-            assertEquals(returnedIds, storedIds, "trial " + trial + ": returned ids must all be stored");
+            assertEquals(1, associated.get(), "trial " + trial + ": exactly one association may succeed");
+            assertEquals(N - 1, alreadyAssociated.get(),
+                    "trial " + trial + ": remaining callers must see Resource.AlreadyAssociated");
+            assertEquals(1, subnet.getIpv6CidrBlockAssociationSet().size(),
+                    "trial " + trial + ": subnet must have exactly one IPv6 association");
         }
     }
 

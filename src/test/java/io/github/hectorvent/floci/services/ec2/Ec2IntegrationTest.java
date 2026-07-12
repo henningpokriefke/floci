@@ -837,6 +837,7 @@ class Ec2IntegrationTest {
             .post("/")
         .then()
             .statusCode(200)
+            .body("DisassociateSubnetCidrBlockResponse.subnetId", equalTo(ipv6SubnetId))
             .body("DisassociateSubnetCidrBlockResponse.ipv6CidrBlockAssociation.associationId",
                     equalTo(subnetIpv6AssociationId));
 

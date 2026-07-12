@@ -68,6 +68,7 @@ import io.github.hectorvent.floci.services.ec2.model.SecurityGroupRule;
 import io.github.hectorvent.floci.services.ec2.model.Snapshot;
 import io.github.hectorvent.floci.services.ec2.model.Subnet;
 import io.github.hectorvent.floci.services.ec2.model.SubnetIpv6CidrBlockAssociation;
+import io.github.hectorvent.floci.services.ec2.model.SubnetIpv6CidrBlockDisassociation;
 import io.github.hectorvent.floci.services.ec2.model.Tag;
 import io.github.hectorvent.floci.services.ec2.model.Volume;
 import io.github.hectorvent.floci.services.ec2.model.VolumeAttachment;
@@ -1366,6 +1367,10 @@ public class Ec2Service {
         synchronized (lockFor(key(region, subnetId))) {
             Subnet subnet = requireSubnet(region, subnetId);
             validateSubnetIpv6CidrBlock(getRequiredVpc(region, subnet.getVpcId()), ipv6CidrBlock);
+            if (!subnet.getIpv6CidrBlockAssociationSet().isEmpty()) {
+                throw new AwsException("Resource.AlreadyAssociated",
+                        "The subnet '" + subnetId + "' already has an IPv6 CIDR block association", 400);
+            }
             SubnetIpv6CidrBlockAssociation association = new SubnetIpv6CidrBlockAssociation(
                     "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock);
             List<SubnetIpv6CidrBlockAssociation> next = new ArrayList<>(subnet.getIpv6CidrBlockAssociationSet());
@@ -1376,7 +1381,7 @@ public class Ec2Service {
         }
     }
 
-    public SubnetIpv6CidrBlockAssociation disassociateSubnetCidrBlock(String region, String associationId) {
+    public SubnetIpv6CidrBlockDisassociation disassociateSubnetCidrBlock(String region, String associationId) {
         for (Subnet subnet : subnets.scan(k -> true)) {
             Optional<SubnetIpv6CidrBlockAssociation> association = subnet.getIpv6CidrBlockAssociationSet().stream()
                     .filter(candidate -> candidate.getAssociationId().equals(associationId))
@@ -1388,7 +1393,7 @@ public class Ec2Service {
                     next.removeIf(candidate -> candidate.getAssociationId().equals(associationId));
                     current.setIpv6CidrBlockAssociationSet(next);
                     subnets.put(key(region, current.getSubnetId()), current);
-                    return association.get();
+                    return new SubnetIpv6CidrBlockDisassociation(current.getSubnetId(), association.get());
                 }
             }
         }
