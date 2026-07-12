@@ -594,6 +594,34 @@ class Ec2IntegrationTest {
     }
 
     @Test
+    @Order(11)
+    void associateAmazonProvidedIpv6CidrBlockWithExistingVpc() {
+        String existingVpcId = given()
+            .formParam("Action", "CreateVpc")
+            .formParam("CidrBlock", "10.2.0.0/16")
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .extract().path("CreateVpcResponse.vpc.vpcId");
+
+        given()
+            .formParam("Action", "AssociateVpcCidrBlock")
+            .formParam("VpcId", existingVpcId)
+            .formParam("AmazonProvidedIpv6CidrBlock", "true")
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("AssociateVpcCidrBlockResponse.vpcId", equalTo(existingVpcId))
+            .body("AssociateVpcCidrBlockResponse.ipv6CidrBlockAssociation.ipv6CidrBlock",
+                    matchesRegex("2600:1f00:[0-9a-f]{4}:[0-9a-f]{2}00::/56"))
+            .body("AssociateVpcCidrBlockResponse.ipv6CidrBlockAssociation.ipv6Pool", equalTo("Amazon"));
+    }
+
+    @Test
     @Order(12)
     void createDualStackSubnet() {
         String subnetIpv6CidrBlock = ipv6VpcCidrBlock.replace("00::/56", "01::/64");

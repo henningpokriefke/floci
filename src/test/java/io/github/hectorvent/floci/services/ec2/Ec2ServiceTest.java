@@ -55,6 +55,44 @@ class Ec2ServiceTest {
     }
 
     @Test
+    void associateVpcIpv6CidrBlockAddsAssociationAndLocalRoute() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false);
+
+        var association = service.associateVpcIpv6CidrBlock("us-east-1", vpc.getVpcId());
+
+        assertEquals(association.getAssociationId(), service.describeVpcs(
+                "us-east-1", List.of(vpc.getVpcId()), Map.of())
+                .getFirst().getIpv6CidrBlockAssociationSet().getFirst().getAssociationId());
+        assertTrue(service.describeRouteTables("us-east-1", List.of(), Map.of()).stream()
+                .filter(routeTable -> vpc.getVpcId().equals(routeTable.getVpcId()))
+                .flatMap(routeTable -> routeTable.getRoutes().stream())
+                .anyMatch(route -> association.getIpv6CidrBlock().equals(route.getDestinationIpv6CidrBlock())));
+    }
+
+    @Test
+    void disassociateVpcIpv6CidrBlockRejectsDependentSubnetAssociation() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false, true);
+        var association = vpc.getIpv6CidrBlockAssociationSet().getFirst();
+        service.createSubnet("us-east-1", vpc.getVpcId(), "10.0.1.0/24",
+                association.getIpv6CidrBlock().replace("00::/56", "01::/64"), "us-east-1a");
+
+        AwsException error = assertThrows(AwsException.class,
+                () -> service.disassociateVpcCidrBlock("us-east-1", association.getAssociationId()));
+
+        assertEquals("DependencyViolation", error.getErrorCode());
+        assertEquals(1, service.describeVpcs("us-east-1", List.of(vpc.getVpcId()), Map.of())
+                .getFirst().getIpv6CidrBlockAssociationSet().size());
+    }
+
+    @Test
     void amazonProvidedIpv6CidrsAreUniqueWithinRegion() {
         Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
                 mock(Ec2PortForwardManager.class),

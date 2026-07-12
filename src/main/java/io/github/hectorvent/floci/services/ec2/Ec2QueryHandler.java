@@ -991,6 +991,18 @@ public class Ec2QueryHandler {
 
     private Response handleAssociateVpcCidrBlock(MultivaluedMap<String, String> p, String region) {
         String vpcId = p.getFirst("VpcId");
+        if (Boolean.parseBoolean(p.getFirst("AmazonProvidedIpv6CidrBlock"))) {
+            VpcIpv6CidrBlockAssociation association = service.associateVpcIpv6CidrBlock(region, vpcId);
+            XmlBuilder xml = new XmlBuilder()
+                    .start("AssociateVpcCidrBlockResponse", AwsNamespaces.EC2)
+                    .elem("requestId", UUID.randomUUID().toString())
+                    .elem("vpcId", vpcId)
+                    .start("ipv6CidrBlockAssociation")
+                    .raw(vpcIpv6AssociationXml(association))
+                    .end("ipv6CidrBlockAssociation")
+                    .end("AssociateVpcCidrBlockResponse");
+            return xmlResponse(xml.build());
+        }
         String cidrBlock = p.getFirst("CidrBlock");
         VpcCidrBlockAssociation assoc = service.associateVpcCidrBlock(region, vpcId, cidrBlock);
         XmlBuilder xml = new XmlBuilder()

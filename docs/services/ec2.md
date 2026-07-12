@@ -203,7 +203,7 @@ subnets, IPAM, BYOIP, and egress-only internet gateways are not implemented.
 | DescribeVpcEndpoints | Lists or returns stored VPC endpoints. |
 | DeleteVpcEndpoints | Deletes VPC endpoint records. |
 | CreateDefaultVpc | Creates or returns the default VPC for the region. |
-| AssociateVpcCidrBlock | Adds a secondary CIDR block association to a VPC. |
+| AssociateVpcCidrBlock | Adds a secondary IPv4 CIDR or Amazon-provided IPv6 CIDR association to a VPC. |
 | DisassociateVpcCidrBlock | Removes an IPv4 or IPv6 CIDR block association and its local route from a VPC. |
 
 ### Subnets

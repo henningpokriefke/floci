@@ -1177,6 +1177,39 @@ public class Ec2Service {
         return assoc;
     }
 
+    public VpcIpv6CidrBlockAssociation associateVpcIpv6CidrBlock(String region, String vpcId) {
+        ensureDefaultResources(region);
+        synchronized (lockFor(key(region, vpcId))) {
+            Vpc vpc = getRequiredVpc(region, vpcId);
+            VpcIpv6CidrBlockAssociation association = new VpcIpv6CidrBlockAssociation(
+                    "vpc-cidr-assoc-" + randomHex(8), generatedIpv6CidrBlock(region));
+            association.setNetworkBorderGroup(region);
+            List<VpcIpv6CidrBlockAssociation> associations =
+                    new ArrayList<>(vpc.getIpv6CidrBlockAssociationSet());
+            associations.add(association);
+            vpc.setIpv6CidrBlockAssociationSet(associations);
+            vpcs.put(key(region, vpcId), vpc);
+            addVpcIpv6LocalRoutes(region, vpcId, association.getIpv6CidrBlock());
+            return association;
+        }
+    }
+
+    private void addVpcIpv6LocalRoutes(String region, String vpcId, String cidrBlock) {
+        for (RouteTable routeTable : routeTables.scan(k -> true)) {
+            if (region.equals(routeTable.getRegion()) && vpcId.equals(routeTable.getVpcId())) {
+                synchronized (lockFor(key(region, routeTable.getRouteTableId()))) {
+                    RouteTable current = getRequiredRouteTable(region, routeTable.getRouteTableId());
+                    List<Route> routes = new ArrayList<>(current.getRoutes());
+                    Route route = new Route(null, "local", "CreateRouteTable");
+                    route.setDestinationIpv6CidrBlock(cidrBlock);
+                    routes.add(route);
+                    current.setRoutes(routes);
+                    routeTables.put(key(region, current.getRouteTableId()), current);
+                }
+            }
+        }
+    }
+
     public void disassociateVpcCidrBlock(String region, String associationId) {
         ensureDefaultResources(region);
         for (Vpc vpc : vpcs.scan(k -> true)) {
@@ -1191,6 +1224,11 @@ public class Ec2Service {
                             .filter(association -> association.getAssociationId().equals(associationId))
                             .map(VpcIpv6CidrBlockAssociation::getIpv6CidrBlock)
                             .toList();
+                    if (removedIpv6Cidrs.stream().anyMatch(
+                            cidrBlock -> subnetUsesVpcIpv6Cidr(region, current.getVpcId(), cidrBlock))) {
+                        throw new AwsException("DependencyViolation",
+                                "The IPv6 CIDR block has dependent subnet associations", 400);
+                    }
                     ipv4Associations.removeIf(association -> association.getAssociationId().equals(associationId));
                     ipv6Associations.removeIf(association -> association.getAssociationId().equals(associationId));
                     current.setCidrBlockAssociationSet(ipv4Associations);
@@ -1200,6 +1238,21 @@ public class Ec2Service {
                 }
             }
         }
+    }
+
+    private boolean subnetUsesVpcIpv6Cidr(String region, String vpcId, String vpcCidrBlock) {
+        return subnets.scan(k -> true).stream()
+                .filter(subnet -> region.equals(subnet.getRegion()) && vpcId.equals(subnet.getVpcId()))
+                .flatMap(subnet -> subnet.getIpv6CidrBlockAssociationSet().stream())
+                .anyMatch(association -> {
+                    try {
+                        return isWithinVpcIpv6Cidr(
+                                InetAddress.getByName(association.getIpv6CidrBlock().split("/", -1)[0]).getAddress(),
+                                vpcCidrBlock);
+                    } catch (UnknownHostException exception) {
+                        return false;
+                    }
+                });
     }
 
     private void removeVpcIpv6LocalRoutes(String region, String vpcId, List<String> cidrBlocks) {
