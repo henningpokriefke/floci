@@ -614,10 +614,31 @@ class Ec2IntegrationTest {
             .body("CreateSubnetResponse.subnet.ipv6CidrBlockAssociationSet.item.ipv6AddressAttribute", equalTo("public"))
             .body("CreateSubnetResponse.subnet.ipv6CidrBlockAssociationSet.item.ipSource", equalTo("amazon"));
 
-        given()
+        String ipv6RouteTableId = given()
             .formParam("Action", "DescribeRouteTables")
             .formParam("Filter.1.Name", "vpc-id")
             .formParam("Filter.1.Value.1", ipv6VpcId)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeRouteTablesResponse.routeTableSet.item.routeSet.item.find { it.destinationIpv6CidrBlock == '" + ipv6VpcCidrBlock + "' }.gatewayId", equalTo("local"))
+            .extract().path("DescribeRouteTablesResponse.routeTableSet.item.routeTableId");
+
+        given()
+            .formParam("Action", "DeleteRoute")
+            .formParam("RouteTableId", ipv6RouteTableId)
+            .formParam("DestinationIpv6CidrBlock", ipv6VpcCidrBlock)
+            .header("Authorization", AUTH_HEADER)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        given()
+            .formParam("Action", "DescribeRouteTables")
+            .formParam("RouteTableId.1", ipv6RouteTableId)
             .header("Authorization", AUTH_HEADER)
         .when()
             .post("/")

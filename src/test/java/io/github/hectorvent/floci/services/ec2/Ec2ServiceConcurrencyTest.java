@@ -12,6 +12,7 @@ import io.github.hectorvent.floci.services.ec2.model.IpRange;
 import io.github.hectorvent.floci.services.ec2.model.NetworkAcl;
 import io.github.hectorvent.floci.services.ec2.model.RouteTable;
 import io.github.hectorvent.floci.services.ec2.model.SecurityGroup;
+import io.github.hectorvent.floci.services.ec2.model.Subnet;
 import io.github.hectorvent.floci.services.ec2.model.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -71,6 +72,30 @@ class Ec2ServiceConcurrencyTest {
             assertTrue(rt.getAssociations().stream()
                             .allMatch(a -> "associated".equals(a.getAssociationState())),
                     "every association must report associated");
+        }
+    }
+
+    @Test
+    void concurrentAssociateSubnetIpv6CidrBlockKeepsEveryAssociation() throws Exception {
+        for (int trial = 0; trial < TRIALS; trial++) {
+            String region = "race-subnet-ipv6-" + trial;
+            Ec2Service service = newService();
+            var vpc = service.createVpc(region, "10.0.0.0/16", false, true);
+            String subnetId = service.createSubnet(region, vpc.getVpcId(), "10.0.1.0/24", null)
+                    .getSubnetId();
+            String vpcIpv6Cidr = vpc.getIpv6CidrBlockAssociationSet().getFirst().getIpv6CidrBlock();
+
+            Set<String> returnedIds = runRace(i -> service.associateSubnetCidrBlock(
+                    region, subnetId, vpcIpv6Cidr.replace("00::/56", String.format("%02x::/64", i + 1)))
+                    .getAssociationId());
+
+            Subnet subnet = service.describeSubnets(region, List.of(subnetId), Map.of()).getFirst();
+            assertEquals(N, subnet.getIpv6CidrBlockAssociationSet().size(),
+                    "trial " + trial + ": lost subnet IPv6 associations");
+            Set<String> storedIds = subnet.getIpv6CidrBlockAssociationSet().stream()
+                    .map(a -> a.getAssociationId())
+                    .collect(Collectors.toSet());
+            assertEquals(returnedIds, storedIds, "trial " + trial + ": returned ids must all be stored");
         }
     }
 

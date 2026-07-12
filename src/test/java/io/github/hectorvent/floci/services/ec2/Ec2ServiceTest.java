@@ -21,7 +21,9 @@ import io.github.hectorvent.floci.services.ec2.model.VpcEndpoint;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -32,6 +34,21 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class Ec2ServiceTest {
+
+    @Test
+    void amazonProvidedIpv6CidrsAreUniqueWithinRegion() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        Set<String> allocations = new HashSet<>();
+
+        for (int i = 0; i < 100; i++) {
+            String cidr = service.createVpc("us-east-1", "10." + i + ".0.0/16", false, true)
+                    .getIpv6CidrBlockAssociationSet().getFirst().getIpv6CidrBlock();
+            assertTrue(allocations.add(cidr), "Amazon-provided IPv6 CIDRs must not collide");
+        }
+    }
 
     @Test
     void mockModeTreatsExistingNonTerminatedInstanceAsRunningContainer() {

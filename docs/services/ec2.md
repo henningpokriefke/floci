@@ -158,12 +158,17 @@ Floci seeds the following resources on first use in each region so Terraform, th
 Floci supports the Amazon-provided dual-stack control-plane workflow used by AWS CLI,
 SDK, Terraform, and OpenTofu clients:
 
-1. Create a VPC with `AmazonProvidedIpv6CidrBlock=true`. Floci assigns a stable
-   public `/56` IPv6 CIDR and returns the allocation metadata expected by AWS clients.
+1. Create a VPC with `AmazonProvidedIpv6CidrBlock=true`. Floci assigns a unique
+   public `/56` IPv6 CIDR within the region and returns the allocation metadata
+   expected by AWS clients.
 2. Create a dual-stack subnet with both `CidrBlock` and `Ipv6CidrBlock`, or associate
-   a `/64` with an existing subnet using `AssociateSubnetCidrBlock`.
+   a `/64` with an existing subnet using `AssociateSubnetCidrBlock`. The `/64` must
+   be contained by the parent VPC's IPv6 `/56`; IPv4-only VPCs reject IPv6 subnet
+   associations. Remove a separately managed association with
+   `DisassociateSubnetCidrBlock`.
 3. Create and delete routes using `DestinationIpv6CidrBlock`. Route tables for a
-   dual-stack VPC include its IPv4 and IPv6 local routes.
+   dual-stack VPC include protected IPv4 and IPv6 local routes. Creating a second
+   route for an existing IPv4 or IPv6 destination returns `RouteAlreadyExists`.
 
 The current IPv6 scope covers Amazon-provided dual-stack VPCs and subnets. IPv6-only
 subnets, IPAM, BYOIP, and egress-only internet gateways are not implemented.
