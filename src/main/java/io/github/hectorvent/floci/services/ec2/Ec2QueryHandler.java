@@ -1604,6 +1604,7 @@ public class Ec2QueryHandler {
                 p.getFirst("RuleAction"),
                 Boolean.parseBoolean(p.getFirst("Egress")),
                 p.getFirst("CidrBlock"),
+                p.getFirst("Ipv6CidrBlock"),
                 fromStr != null ? Integer.valueOf(fromStr) : null,
                 toStr != null ? Integer.valueOf(toStr) : null,
                 "ReplaceNetworkAclEntry".equals(action));

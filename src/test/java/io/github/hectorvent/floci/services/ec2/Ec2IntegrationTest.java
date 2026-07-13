@@ -3217,6 +3217,54 @@ class Ec2IntegrationTest {
     }
 
     @Test
+    @Order(312)
+    void createAndReplaceIpv6NetworkAclEntryRoundTrips() {
+        String vpc = newVpc("10.32.1.0/24");
+        String aclId = given()
+            .formParam("Action", "CreateNetworkAcl")
+            .formParam("VpcId", vpc)
+            .header("Authorization", AUTH_HEADER)
+        .when().post("/")
+        .then().statusCode(200)
+            .extract().path("CreateNetworkAclResponse.networkAcl.networkAclId");
+
+        given()
+            .formParam("Action", "CreateNetworkAclEntry")
+            .formParam("NetworkAclId", aclId)
+            .formParam("RuleNumber", "101")
+            .formParam("Protocol", "-1")
+            .formParam("RuleAction", "allow")
+            .formParam("Egress", "true")
+            .formParam("Ipv6CidrBlock", "::/0")
+            .header("Authorization", AUTH_HEADER)
+        .when().post("/")
+        .then().statusCode(200);
+
+        given()
+            .formParam("Action", "ReplaceNetworkAclEntry")
+            .formParam("NetworkAclId", aclId)
+            .formParam("RuleNumber", "101")
+            .formParam("Protocol", "-1")
+            .formParam("RuleAction", "deny")
+            .formParam("Egress", "true")
+            .formParam("Ipv6CidrBlock", "2001:db8:1::/64")
+            .header("Authorization", AUTH_HEADER)
+        .when().post("/")
+        .then().statusCode(200);
+
+        given()
+            .formParam("Action", "DescribeNetworkAcls")
+            .formParam("NetworkAclId.1", aclId)
+            .header("Authorization", AUTH_HEADER)
+        .when().post("/")
+        .then().statusCode(200)
+            .body("DescribeNetworkAclsResponse.networkAclSet.item.entrySet.item.find { it.ruleNumber == '101' }.ruleAction",
+                    equalTo("deny"))
+            .body("DescribeNetworkAclsResponse.networkAclSet.item.entrySet.item.find { it.ruleNumber == '101' }.ipv6CidrBlock",
+                    equalTo("2001:db8:1::/64"));
+    }
+
+    @Test
     @Order(313)
     void deleteNetworkAclWithAssociationFails() {
         String vpc = newVpc("10.33.0.0/16");

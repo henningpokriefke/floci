@@ -473,8 +473,8 @@ public class Ec2Service {
     }
 
     public void createNetworkAclEntry(String region, String networkAclId, int ruleNumber, String protocol,
-                                      String ruleAction, boolean egress, String cidrBlock, Integer from, Integer to,
-                                      boolean replace) {
+                                      String ruleAction, boolean egress, String cidrBlock, String ipv6CidrBlock,
+                                      Integer from, Integer to, boolean replace) {
         synchronized (lockFor(key(region, networkAclId))) {
             NetworkAcl acl = getRequiredNetworkAcl(region, networkAclId);
             boolean exists = acl.getEntries().stream()
@@ -486,6 +486,7 @@ public class Ec2Service {
             List<NetworkAclEntry> next = new ArrayList<>(acl.getEntries());
             next.removeIf(e -> e.getRuleNumber() == ruleNumber && e.isEgress() == egress);
             NetworkAclEntry entry = naclEntry(ruleNumber, protocol, ruleAction, egress, cidrBlock);
+            entry.setIpv6CidrBlock(ipv6CidrBlock);
             entry.setPortRangeFrom(from);
             entry.setPortRangeTo(to);
             next.add(entry);
@@ -1749,26 +1750,12 @@ public class Ec2Service {
         List<IpRange> ranges = perm.getIpRanges();
         List<Ipv6Range> ipv6Ranges = perm.getIpv6Ranges();
         if ((ranges == null || ranges.isEmpty()) && (ipv6Ranges == null || ipv6Ranges.isEmpty())) {
-            SecurityGroupRule rule = new SecurityGroupRule();
-            rule.setSecurityGroupRuleId("sgr-" + randomHex(17));
-            rule.setGroupId(groupId);
-            rule.setGroupOwnerId(accountId);
-            rule.setEgress(egress);
-            rule.setIpProtocol(perm.getIpProtocol());
-            rule.setFromPort(perm.getFromPort());
-            rule.setToPort(perm.getToPort());
+            SecurityGroupRule rule = newSecurityGroupRule(groupId, perm, egress);
             securityGroupRules.put(key(region, rule.getSecurityGroupRuleId()), rule);
             rules.add(rule);
-        } else {
+        } else if (ranges != null) {
             for (IpRange range : ranges) {
-                SecurityGroupRule rule = new SecurityGroupRule();
-                rule.setSecurityGroupRuleId("sgr-" + randomHex(17));
-                rule.setGroupId(groupId);
-                rule.setGroupOwnerId(accountId);
-                rule.setEgress(egress);
-                rule.setIpProtocol(perm.getIpProtocol());
-                rule.setFromPort(perm.getFromPort());
-                rule.setToPort(perm.getToPort());
+                SecurityGroupRule rule = newSecurityGroupRule(groupId, perm, egress);
                 rule.setCidrIpv4(range.getCidrIp());
                 rule.setDescription(range.getDescription());
                 securityGroupRules.put(key(region, rule.getSecurityGroupRuleId()), rule);
@@ -1777,14 +1764,7 @@ public class Ec2Service {
         }
         if (ipv6Ranges != null) {
             for (Ipv6Range range : ipv6Ranges) {
-                SecurityGroupRule rule = new SecurityGroupRule();
-                rule.setSecurityGroupRuleId("sgr-" + randomHex(17));
-                rule.setGroupId(groupId);
-                rule.setGroupOwnerId(accountId);
-                rule.setEgress(egress);
-                rule.setIpProtocol(perm.getIpProtocol());
-                rule.setFromPort(perm.getFromPort());
-                rule.setToPort(perm.getToPort());
+                SecurityGroupRule rule = newSecurityGroupRule(groupId, perm, egress);
                 rule.setCidrIpv6(range.getCidrIpv6());
                 rule.setDescription(range.getDescription());
                 securityGroupRules.put(key(region, rule.getSecurityGroupRuleId()), rule);
@@ -1792,6 +1772,18 @@ public class Ec2Service {
             }
         }
         return rules;
+    }
+
+    private SecurityGroupRule newSecurityGroupRule(String groupId, IpPermission permission, boolean egress) {
+        SecurityGroupRule rule = new SecurityGroupRule();
+        rule.setSecurityGroupRuleId("sgr-" + randomHex(17));
+        rule.setGroupId(groupId);
+        rule.setGroupOwnerId(accountId);
+        rule.setEgress(egress);
+        rule.setIpProtocol(permission.getIpProtocol());
+        rule.setFromPort(permission.getFromPort());
+        rule.setToPort(permission.getToPort());
+        return rule;
     }
 
     public void revokeSecurityGroupIngress(String region, String groupId, List<IpPermission> permissions) {

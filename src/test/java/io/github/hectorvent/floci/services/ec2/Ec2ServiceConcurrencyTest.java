@@ -25,6 +25,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -76,7 +77,7 @@ class Ec2ServiceConcurrencyTest {
     }
 
     @Test
-    void concurrentAssociateSubnetIpv6CidrBlockKeepsEveryAssociation() throws Exception {
+    void concurrentAssociateSubnetIpv6CidrBlockAllowsExactlyOneAssociation() throws Exception {
         for (int trial = 0; trial < TRIALS; trial++) {
             String region = "race-subnet-ipv6-" + trial;
             Ec2Service service = newService();
@@ -115,7 +116,7 @@ class Ec2ServiceConcurrencyTest {
             Ec2Service service = newService();
             var vpc = service.createVpc(region, "10.0.0.0/16", false, true);
             String vpcIpv6Cidr = vpc.getIpv6CidrBlockAssociationSet().getFirst().getIpv6CidrBlock();
-            List<String> subnetIds = java.util.stream.IntStream.range(0, N)
+            List<String> subnetIds = IntStream.range(0, N)
                     .mapToObj(i -> service.createSubnet(
                             region, vpc.getVpcId(), "10.0." + (i + 1) + ".0/24", null).getSubnetId())
                     .toList();
@@ -143,7 +144,7 @@ class Ec2ServiceConcurrencyTest {
         for (int trial = 0; trial < TRIALS; trial++) {
             String region = "race-vpc-ipv6-allocation-" + trial;
             Ec2Service service = newService();
-            List<String> vpcIds = java.util.stream.IntStream.range(0, N)
+            List<String> vpcIds = IntStream.range(0, N)
                     .mapToObj(i -> service.createVpc(region, "10." + i + ".0.0/16", false).getVpcId())
                     .toList();
 
@@ -205,7 +206,7 @@ class Ec2ServiceConcurrencyTest {
             try {
                 runRace(i -> {
                     service.createNetworkAclEntry(region, aclId, 100 + i, "6", "allow", false,
-                            "10.0." + i + ".0/24", 80, 80, false);
+                            "10.0." + i + ".0/24", null, 80, 80, false);
                     return "entry-" + i;
                 });
             } finally {
