@@ -12,6 +12,7 @@ import io.github.hectorvent.floci.services.ec2.model.IpRange;
 import io.github.hectorvent.floci.services.ec2.model.NetworkAcl;
 import io.github.hectorvent.floci.services.ec2.model.RouteTable;
 import io.github.hectorvent.floci.services.ec2.model.SecurityGroup;
+import io.github.hectorvent.floci.services.ec2.model.Subnet;
 import io.github.hectorvent.floci.services.ec2.model.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -24,6 +25,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -71,6 +73,85 @@ class Ec2ServiceConcurrencyTest {
             assertTrue(rt.getAssociations().stream()
                             .allMatch(a -> "associated".equals(a.getAssociationState())),
                     "every association must report associated");
+        }
+    }
+
+    @Test
+    void concurrentAssociateSubnetIpv6CidrBlockAllowsExactlyOneAssociation() throws Exception {
+        for (int trial = 0; trial < TRIALS; trial++) {
+            String region = "race-subnet-ipv6-" + trial;
+            Ec2Service service = newService();
+            var vpc = service.createVpc(region, "10.0.0.0/16", false, true);
+            String subnetId = service.createSubnet(region, vpc.getVpcId(), "10.0.1.0/24", null)
+                    .getSubnetId();
+            String vpcIpv6Cidr = vpc.getIpv6CidrBlockAssociationSet().getFirst().getIpv6CidrBlock();
+
+            AtomicInteger associated = new AtomicInteger();
+            AtomicInteger alreadyAssociated = new AtomicInteger();
+            runRaceAllowing(i -> {
+                try {
+                    service.associateSubnetCidrBlock(
+                            region, subnetId,
+                            vpcIpv6Cidr.replace("00::/56", String.format("%02x::/64", i + 1)));
+                    associated.incrementAndGet();
+                } catch (AwsException exception) {
+                    assertEquals("Resource.AlreadyAssociated", exception.getErrorCode());
+                    alreadyAssociated.incrementAndGet();
+                }
+            });
+
+            Subnet subnet = service.describeSubnets(region, List.of(subnetId), Map.of()).getFirst();
+            assertEquals(1, associated.get(), "trial " + trial + ": exactly one association may succeed");
+            assertEquals(N - 1, alreadyAssociated.get(),
+                    "trial " + trial + ": remaining callers must see Resource.AlreadyAssociated");
+            assertEquals(1, subnet.getIpv6CidrBlockAssociationSet().size(),
+                    "trial " + trial + ": subnet must have exactly one IPv6 association");
+        }
+    }
+
+    @Test
+    void concurrentSubnetIpv6AssociationsRejectDuplicateCidr() throws Exception {
+        for (int trial = 0; trial < TRIALS; trial++) {
+            String region = "race-subnet-ipv6-conflict-" + trial;
+            Ec2Service service = newService();
+            var vpc = service.createVpc(region, "10.0.0.0/16", false, true);
+            String vpcIpv6Cidr = vpc.getIpv6CidrBlockAssociationSet().getFirst().getIpv6CidrBlock();
+            List<String> subnetIds = IntStream.range(0, N)
+                    .mapToObj(i -> service.createSubnet(
+                            region, vpc.getVpcId(), "10.0." + (i + 1) + ".0/24", null).getSubnetId())
+                    .toList();
+            AtomicInteger associated = new AtomicInteger();
+            AtomicInteger conflicts = new AtomicInteger();
+
+            runRaceAllowing(i -> {
+                try {
+                    service.associateSubnetCidrBlock(
+                            region, subnetIds.get(i), vpcIpv6Cidr.replace("00::/56", "01::/64"));
+                    associated.incrementAndGet();
+                } catch (AwsException exception) {
+                    assertEquals("InvalidSubnet.Conflict", exception.getErrorCode());
+                    conflicts.incrementAndGet();
+                }
+            });
+
+            assertEquals(1, associated.get(), "trial " + trial + ": one subnet must claim the /64");
+            assertEquals(N - 1, conflicts.get(), "trial " + trial + ": duplicate /64s must be rejected");
+        }
+    }
+
+    @Test
+    void concurrentAmazonProvidedIpv6AllocationsAreUniqueWithinRegion() throws Exception {
+        for (int trial = 0; trial < TRIALS; trial++) {
+            String region = "race-vpc-ipv6-allocation-" + trial;
+            Ec2Service service = newService();
+            List<String> vpcIds = IntStream.range(0, N)
+                    .mapToObj(i -> service.createVpc(region, "10." + i + ".0.0/16", false).getVpcId())
+                    .toList();
+
+            Set<String> allocations = runRace(i -> service.associateVpcIpv6CidrBlock(region, vpcIds.get(i))
+                    .getIpv6CidrBlock());
+
+            assertEquals(N, allocations.size(), "trial " + trial + ": every VPC must receive a unique /56");
         }
     }
 
@@ -125,7 +206,7 @@ class Ec2ServiceConcurrencyTest {
             try {
                 runRace(i -> {
                     service.createNetworkAclEntry(region, aclId, 100 + i, "6", "allow", false,
-                            "10.0." + i + ".0/24", 80, 80, false);
+                            "10.0." + i + ".0/24", null, 80, 80, false);
                     return "entry-" + i;
                 });
             } finally {

@@ -153,6 +153,30 @@ Floci seeds the following resources on first use in each region so Terraform, th
 | Main Route Table | `rtb-default` | Associated with default VPC |
 | Default Network ACL | `acl-default` | Allow-all, associated with the default subnets |
 
+## Dual-stack VPCs
+
+Floci supports the Amazon-provided dual-stack control-plane workflow used by AWS CLI,
+SDK, Terraform, and OpenTofu clients:
+
+1. Create a VPC with `AmazonProvidedIpv6CidrBlock=true`. Floci assigns a unique
+   public `/56` IPv6 CIDR within the region and returns the allocation metadata
+   expected by AWS clients. As AWS does, Floci adds IPv6 allow-all egress to
+   security groups whose original default egress is still present and IPv6 rules
+   to the unmodified directions of the default network ACL. Security groups
+   created later in the dual-stack VPC also receive IPv4 and IPv6 allow-all egress.
+2. Create a dual-stack subnet with both `CidrBlock` and `Ipv6CidrBlock`, or associate
+   a `/64` with an existing subnet using `AssociateSubnetCidrBlock`. The `/64` must
+   be contained by the parent VPC's IPv6 `/56`; IPv4-only VPCs reject IPv6 subnet
+   associations, a subnet can have only one IPv6 CIDR association, and sibling
+   subnets cannot share the same `/64`. Remove a separately managed association
+   with `DisassociateSubnetCidrBlock`.
+3. Create and delete routes using `DestinationIpv6CidrBlock`. Route tables for a
+   dual-stack VPC include protected IPv4 and IPv6 local routes. Creating a second
+   route for an existing IPv4 or IPv6 destination returns `RouteAlreadyExists`.
+
+The current IPv6 scope covers Amazon-provided dual-stack VPCs and subnets. IPv6-only
+subnets, IPAM, BYOIP, and egress-only internet gateways are not implemented.
+
 ## Supported Actions
 
 ### Instances
@@ -173,8 +197,8 @@ Floci seeds the following resources on first use in each region so Terraform, th
 
 | Action | Description |
 |--------|-------------|
-| CreateVpc | Creates a VPC with the requested CIDR block. |
-| DescribeVpcs | Lists or returns stored VPCs. |
+| CreateVpc | Creates an IPv4 VPC and optionally assigns an Amazon-provided IPv6 `/56`. |
+| DescribeVpcs | Lists stored VPCs, including IPv4 and IPv6 CIDR associations. |
 | DeleteVpc | Deletes a VPC from the local EC2 store. |
 | ModifyVpcAttribute | Updates supported VPC attributes. |
 | DescribeVpcAttribute | Returns a supported VPC attribute. |
@@ -183,17 +207,19 @@ Floci seeds the following resources on first use in each region so Terraform, th
 | DescribeVpcEndpoints | Lists or returns stored VPC endpoints. |
 | DeleteVpcEndpoints | Deletes VPC endpoint records. |
 | CreateDefaultVpc | Creates or returns the default VPC for the region. |
-| AssociateVpcCidrBlock | Adds a secondary CIDR block association to a VPC. |
-| DisassociateVpcCidrBlock | Removes a secondary CIDR block association from a VPC. |
+| AssociateVpcCidrBlock | Adds a secondary IPv4 CIDR or Amazon-provided IPv6 CIDR association to a VPC. |
+| DisassociateVpcCidrBlock | Removes an IPv4 or IPv6 CIDR block association and its local route from a VPC. |
 
 ### Subnets
 
 | Action | Description |
 |--------|-------------|
-| CreateSubnet | Creates a subnet in a VPC. |
-| DescribeSubnets | Lists or returns stored subnets. |
+| CreateSubnet | Creates an IPv4 or dual-stack subnet in a VPC. |
+| DescribeSubnets | Lists stored subnets, including IPv6 CIDR associations. |
 | DeleteSubnet | Deletes a subnet from the local EC2 store. |
 | ModifySubnetAttribute | Updates supported subnet attributes. |
+| AssociateSubnetCidrBlock | Associates an IPv6 CIDR block with an existing subnet. |
+| DisassociateSubnetCidrBlock | Removes an IPv6 CIDR block association from a subnet. |
 
 ### Security Groups
 
@@ -248,13 +274,13 @@ Floci seeds the following resources on first use in each region so Terraform, th
 
 | Action | Description |
 |--------|-------------|
-| CreateRouteTable | Creates a route table in a VPC. |
-| DescribeRouteTables | Lists or returns stored route tables. |
+| CreateRouteTable | Creates a route table with local routes for the VPC's address families. |
+| DescribeRouteTables | Lists stored route tables, including IPv4 and IPv6 destinations. |
 | DeleteRouteTable | Deletes a route table from the local EC2 store. |
 | AssociateRouteTable | Associates a route table with a subnet. |
 | DisassociateRouteTable | Removes a route table association. |
-| CreateRoute | Adds a route to a route table. |
-| DeleteRoute | Removes a route from a route table. |
+| CreateRoute | Adds a route with an IPv4 or IPv6 destination to a route table. |
+| DeleteRoute | Removes a route by its exact IPv4 or IPv6 destination. |
 
 ### Network ACLs
 

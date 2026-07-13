@@ -13,6 +13,7 @@ import io.github.hectorvent.floci.services.ec2.model.GroupIdentifier;
 import io.github.hectorvent.floci.services.ec2.model.Instance;
 import io.github.hectorvent.floci.services.ec2.model.LaunchTemplate;
 import io.github.hectorvent.floci.services.ec2.model.NetworkInterface;
+import io.github.hectorvent.floci.services.ec2.model.NetworkAcl;
 import io.github.hectorvent.floci.services.ec2.model.Reservation;
 import io.github.hectorvent.floci.services.ec2.model.SecurityGroup;
 import io.github.hectorvent.floci.services.ec2.model.Snapshot;
@@ -21,7 +22,9 @@ import io.github.hectorvent.floci.services.ec2.model.VpcEndpoint;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -32,6 +35,117 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class Ec2ServiceTest {
+
+    @Test
+    void disassociateVpcCidrBlockRemovesIpv6AssociationAndLocalRoute() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false, true);
+        var association = vpc.getIpv6CidrBlockAssociationSet().getFirst();
+
+        assertIpv6DefaultNetworkRules(service, "us-east-1", vpc.getVpcId());
+
+        var disassociation = service.disassociateVpcCidrBlock("us-east-1", association.getAssociationId());
+
+        assertEquals(vpc.getVpcId(), disassociation.vpcId());
+        assertEquals(association.getAssociationId(), disassociation.ipv6Association().getAssociationId());
+        assertEquals("disassociating", disassociation.ipv6Association().getCidrBlockState());
+        assertTrue(service.describeVpcs("us-east-1", List.of(vpc.getVpcId()), Map.of())
+                .getFirst().getIpv6CidrBlockAssociationSet().isEmpty());
+        assertTrue(service.describeRouteTables("us-east-1", List.of(), Map.of()).stream()
+                .filter(routeTable -> vpc.getVpcId().equals(routeTable.getVpcId()))
+                .flatMap(routeTable -> routeTable.getRoutes().stream())
+                .noneMatch(route -> association.getIpv6CidrBlock().equals(route.getDestinationIpv6CidrBlock())));
+    }
+
+    @Test
+    void associateVpcIpv6CidrBlockAddsAssociationAndLocalRoute() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false);
+
+        var association = service.associateVpcIpv6CidrBlock("us-east-1", vpc.getVpcId());
+        SecurityGroup applicationGroup = service.createSecurityGroup(
+                "us-east-1", "application", "application security group", vpc.getVpcId());
+
+        assertIpv6DefaultNetworkRules(service, "us-east-1", vpc.getVpcId());
+        assertTrue(applicationGroup.getIpPermissionsEgress().stream()
+                .flatMap(permission -> permission.getIpv6Ranges().stream())
+                .anyMatch(range -> "::/0".equals(range.getCidrIpv6())));
+        assertTrue(service.describeSecurityGroupRules(
+                        "us-east-1", List.of(applicationGroup.getGroupId()), List.of()).stream()
+                .anyMatch(rule -> rule.isEgress() && "::/0".equals(rule.getCidrIpv6())));
+        assertEquals(association.getAssociationId(), service.describeVpcs(
+                "us-east-1", List.of(vpc.getVpcId()), Map.of())
+                .getFirst().getIpv6CidrBlockAssociationSet().getFirst().getAssociationId());
+        assertTrue(service.describeRouteTables("us-east-1", List.of(), Map.of()).stream()
+                .filter(routeTable -> vpc.getVpcId().equals(routeTable.getVpcId()))
+                .flatMap(routeTable -> routeTable.getRoutes().stream())
+                .anyMatch(route -> association.getIpv6CidrBlock().equals(route.getDestinationIpv6CidrBlock())));
+    }
+
+    @Test
+    void disassociateVpcIpv6CidrBlockRejectsDependentSubnetAssociation() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false, true);
+        var association = vpc.getIpv6CidrBlockAssociationSet().getFirst();
+        service.createSubnet("us-east-1", vpc.getVpcId(), "10.0.1.0/24",
+                association.getIpv6CidrBlock().replace("00::/56", "01::/64"), "us-east-1a");
+
+        AwsException error = assertThrows(AwsException.class,
+                () -> service.disassociateVpcCidrBlock("us-east-1", association.getAssociationId()));
+
+        assertEquals("DependencyViolation", error.getErrorCode());
+        assertEquals(1, service.describeVpcs("us-east-1", List.of(vpc.getVpcId()), Map.of())
+                .getFirst().getIpv6CidrBlockAssociationSet().size());
+    }
+
+    @Test
+    void subnetIpv6CidrBlockMustBeUniqueWithinVpc() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false, true);
+        String ipv6Cidr = vpc.getIpv6CidrBlockAssociationSet().getFirst()
+                .getIpv6CidrBlock().replace("00::/56", "01::/64");
+        service.createSubnet("us-east-1", vpc.getVpcId(), "10.0.1.0/24", ipv6Cidr, "us-east-1a");
+        AwsException createError = assertThrows(AwsException.class,
+                () -> service.createSubnet(
+                        "us-east-1", vpc.getVpcId(), "10.0.3.0/24", ipv6Cidr, "us-east-1a"));
+        String siblingSubnetId = service.createSubnet(
+                "us-east-1", vpc.getVpcId(), "10.0.2.0/24", "us-east-1a").getSubnetId();
+
+        AwsException error = assertThrows(AwsException.class,
+                () -> service.associateSubnetCidrBlock("us-east-1", siblingSubnetId, ipv6Cidr));
+
+        assertEquals("InvalidSubnet.Conflict", createError.getErrorCode());
+        assertEquals("InvalidSubnet.Conflict", error.getErrorCode());
+        assertTrue(service.describeSubnets("us-east-1", List.of(siblingSubnetId), Map.of())
+                .getFirst().getIpv6CidrBlockAssociationSet().isEmpty());
+    }
+
+    @Test
+    void amazonProvidedIpv6CidrsAreUniqueWithinRegion() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        Set<String> allocations = new HashSet<>();
+
+        for (int i = 0; i < 100; i++) {
+            String cidr = service.createVpc("us-east-1", "10." + i + ".0.0/16", false, true)
+                    .getIpv6CidrBlockAssociationSet().getFirst().getIpv6CidrBlock();
+            assertTrue(allocations.add(cidr), "Amazon-provided IPv6 CIDRs must not collide");
+        }
+    }
 
     @Test
     void mockModeTreatsExistingNonTerminatedInstanceAsRunningContainer() {
@@ -313,6 +427,23 @@ class Ec2ServiceTest {
         mapping.setDeviceName("/dev/sda1");
         mapping.setEbs(ebs);
         return mapping;
+    }
+
+    private static void assertIpv6DefaultNetworkRules(Ec2Service service, String region, String vpcId) {
+        SecurityGroup defaultGroup = service.describeSecurityGroups(region, List.of(), List.of("default"), Map.of())
+                .stream().filter(group -> vpcId.equals(group.getVpcId())).findFirst().orElseThrow();
+        assertTrue(defaultGroup.getIpPermissionsEgress().stream()
+                .flatMap(permission -> permission.getIpv6Ranges().stream())
+                .anyMatch(range -> "::/0".equals(range.getCidrIpv6())));
+        assertTrue(service.describeSecurityGroupRules(region, List.of(defaultGroup.getGroupId()), List.of()).stream()
+                .anyMatch(rule -> rule.isEgress() && "::/0".equals(rule.getCidrIpv6())));
+
+        NetworkAcl defaultAcl = service.describeNetworkAcls(region, List.of(), Map.of()).stream()
+                .filter(acl -> acl.isDefault() && vpcId.equals(acl.getVpcId())).findFirst().orElseThrow();
+        assertTrue(defaultAcl.getEntries().stream().anyMatch(entry -> !entry.isEgress()
+                && entry.getRuleNumber() == 101 && "::/0".equals(entry.getIpv6CidrBlock())));
+        assertTrue(defaultAcl.getEntries().stream().anyMatch(entry -> entry.isEgress()
+                && entry.getRuleNumber() == 101 && "::/0".equals(entry.getIpv6CidrBlock())));
     }
 
     private static EmulatorConfig mockConfig(boolean ec2Mock) {
