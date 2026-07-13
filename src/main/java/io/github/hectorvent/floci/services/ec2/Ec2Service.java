@@ -1704,7 +1704,8 @@ public class Ec2Service {
     private List<SecurityGroupRule> createRules(String region, String groupId, IpPermission perm, boolean egress) {
         List<SecurityGroupRule> rules = new ArrayList<>();
         List<IpRange> ranges = perm.getIpRanges();
-        if (ranges == null || ranges.isEmpty()) {
+        List<Ipv6Range> ipv6Ranges = perm.getIpv6Ranges();
+        if ((ranges == null || ranges.isEmpty()) && (ipv6Ranges == null || ipv6Ranges.isEmpty())) {
             SecurityGroupRule rule = new SecurityGroupRule();
             rule.setSecurityGroupRuleId("sgr-" + randomHex(17));
             rule.setGroupId(groupId);
@@ -1726,6 +1727,22 @@ public class Ec2Service {
                 rule.setFromPort(perm.getFromPort());
                 rule.setToPort(perm.getToPort());
                 rule.setCidrIpv4(range.getCidrIp());
+                rule.setDescription(range.getDescription());
+                securityGroupRules.put(key(region, rule.getSecurityGroupRuleId()), rule);
+                rules.add(rule);
+            }
+        }
+        if (ipv6Ranges != null) {
+            for (Ipv6Range range : ipv6Ranges) {
+                SecurityGroupRule rule = new SecurityGroupRule();
+                rule.setSecurityGroupRuleId("sgr-" + randomHex(17));
+                rule.setGroupId(groupId);
+                rule.setGroupOwnerId(accountId);
+                rule.setEgress(egress);
+                rule.setIpProtocol(perm.getIpProtocol());
+                rule.setFromPort(perm.getFromPort());
+                rule.setToPort(perm.getToPort());
+                rule.setCidrIpv6(range.getCidrIpv6());
                 rule.setDescription(range.getDescription());
                 securityGroupRules.put(key(region, rule.getSecurityGroupRuleId()), rule);
                 rules.add(rule);

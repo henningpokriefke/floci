@@ -402,6 +402,8 @@ class Ec2ServiceTest {
         assertTrue(defaultGroup.getIpPermissionsEgress().stream()
                 .flatMap(permission -> permission.getIpv6Ranges().stream())
                 .anyMatch(range -> "::/0".equals(range.getCidrIpv6())));
+        assertTrue(service.describeSecurityGroupRules(region, List.of(defaultGroup.getGroupId()), List.of()).stream()
+                .anyMatch(rule -> rule.isEgress() && "::/0".equals(rule.getCidrIpv6())));
 
         NetworkAcl defaultAcl = service.describeNetworkAcls(region, List.of(), Map.of()).stream()
                 .filter(acl -> acl.isDefault() && vpcId.equals(acl.getVpcId())).findFirst().orElseThrow();
