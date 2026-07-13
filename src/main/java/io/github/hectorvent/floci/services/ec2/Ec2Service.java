@@ -1616,11 +1616,10 @@ public class Ec2Service {
 
     public SecurityGroup createSecurityGroup(String region, String groupName, String description, String vpcId) {
         ensureDefaultResources(region);
-        if (vpcId != null && !vpcId.isEmpty()) {
-            getRequiredVpc(region, vpcId);
-        } else {
+        if (vpcId == null || vpcId.isEmpty()) {
             vpcId = "vpc-default";
         }
+        Vpc vpc = getRequiredVpc(region, vpcId);
         // Check duplicate
         String finalVpcId = vpcId;
         boolean exists = securityGroups.scan(k -> true).stream()
@@ -1641,6 +1640,9 @@ public class Ec2Service {
         IpPermission egressAll = new IpPermission();
         egressAll.setIpProtocol("-1");
         egressAll.getIpRanges().add(new IpRange("0.0.0.0/0"));
+        if (!vpc.getIpv6CidrBlockAssociationSet().isEmpty()) {
+            egressAll.getIpv6Ranges().add(new Ipv6Range("::/0"));
+        }
         sg.getIpPermissionsEgress().add(egressAll);
         securityGroups.put(key(region, sgId), sg);
         // Persist the default egress rule as a SecurityGroupRule so that

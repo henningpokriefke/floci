@@ -69,8 +69,16 @@ class Ec2ServiceTest {
         var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false);
 
         var association = service.associateVpcIpv6CidrBlock("us-east-1", vpc.getVpcId());
+        SecurityGroup applicationGroup = service.createSecurityGroup(
+                "us-east-1", "application", "application security group", vpc.getVpcId());
 
         assertIpv6DefaultNetworkRules(service, "us-east-1", vpc.getVpcId());
+        assertTrue(applicationGroup.getIpPermissionsEgress().stream()
+                .flatMap(permission -> permission.getIpv6Ranges().stream())
+                .anyMatch(range -> "::/0".equals(range.getCidrIpv6())));
+        assertTrue(service.describeSecurityGroupRules(
+                        "us-east-1", List.of(applicationGroup.getGroupId()), List.of()).stream()
+                .anyMatch(rule -> rule.isEgress() && "::/0".equals(rule.getCidrIpv6())));
         assertEquals(association.getAssociationId(), service.describeVpcs(
                 "us-east-1", List.of(vpc.getVpcId()), Map.of())
                 .getFirst().getIpv6CidrBlockAssociationSet().getFirst().getAssociationId());
