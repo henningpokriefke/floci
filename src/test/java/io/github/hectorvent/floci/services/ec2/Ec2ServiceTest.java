@@ -108,6 +108,31 @@ class Ec2ServiceTest {
     }
 
     @Test
+    void subnetIpv6CidrBlockMustBeUniqueWithinVpc() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class),
+                mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class), new Ec2InstanceTypeCatalog(),
+                new InMemoryStorageFactory());
+        var vpc = service.createVpc("us-east-1", "10.0.0.0/16", false, true);
+        String ipv6Cidr = vpc.getIpv6CidrBlockAssociationSet().getFirst()
+                .getIpv6CidrBlock().replace("00::/56", "01::/64");
+        service.createSubnet("us-east-1", vpc.getVpcId(), "10.0.1.0/24", ipv6Cidr, "us-east-1a");
+        AwsException createError = assertThrows(AwsException.class,
+                () -> service.createSubnet(
+                        "us-east-1", vpc.getVpcId(), "10.0.3.0/24", ipv6Cidr, "us-east-1a"));
+        String siblingSubnetId = service.createSubnet(
+                "us-east-1", vpc.getVpcId(), "10.0.2.0/24", "us-east-1a").getSubnetId();
+
+        AwsException error = assertThrows(AwsException.class,
+                () -> service.associateSubnetCidrBlock("us-east-1", siblingSubnetId, ipv6Cidr));
+
+        assertEquals("InvalidSubnet.Conflict", createError.getErrorCode());
+        assertEquals("InvalidSubnet.Conflict", error.getErrorCode());
+        assertTrue(service.describeSubnets("us-east-1", List.of(siblingSubnetId), Map.of())
+                .getFirst().getIpv6CidrBlockAssociationSet().isEmpty());
+    }
+
+    @Test
     void amazonProvidedIpv6CidrsAreUniqueWithinRegion() {
         Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
                 mock(Ec2PortForwardManager.class),

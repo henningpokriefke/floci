@@ -109,6 +109,52 @@ class Ec2ServiceConcurrencyTest {
     }
 
     @Test
+    void concurrentSubnetIpv6AssociationsRejectDuplicateCidr() throws Exception {
+        for (int trial = 0; trial < TRIALS; trial++) {
+            String region = "race-subnet-ipv6-conflict-" + trial;
+            Ec2Service service = newService();
+            var vpc = service.createVpc(region, "10.0.0.0/16", false, true);
+            String vpcIpv6Cidr = vpc.getIpv6CidrBlockAssociationSet().getFirst().getIpv6CidrBlock();
+            List<String> subnetIds = java.util.stream.IntStream.range(0, N)
+                    .mapToObj(i -> service.createSubnet(
+                            region, vpc.getVpcId(), "10.0." + (i + 1) + ".0/24", null).getSubnetId())
+                    .toList();
+            AtomicInteger associated = new AtomicInteger();
+            AtomicInteger conflicts = new AtomicInteger();
+
+            runRaceAllowing(i -> {
+                try {
+                    service.associateSubnetCidrBlock(
+                            region, subnetIds.get(i), vpcIpv6Cidr.replace("00::/56", "01::/64"));
+                    associated.incrementAndGet();
+                } catch (AwsException exception) {
+                    assertEquals("InvalidSubnet.Conflict", exception.getErrorCode());
+                    conflicts.incrementAndGet();
+                }
+            });
+
+            assertEquals(1, associated.get(), "trial " + trial + ": one subnet must claim the /64");
+            assertEquals(N - 1, conflicts.get(), "trial " + trial + ": duplicate /64s must be rejected");
+        }
+    }
+
+    @Test
+    void concurrentAmazonProvidedIpv6AllocationsAreUniqueWithinRegion() throws Exception {
+        for (int trial = 0; trial < TRIALS; trial++) {
+            String region = "race-vpc-ipv6-allocation-" + trial;
+            Ec2Service service = newService();
+            List<String> vpcIds = java.util.stream.IntStream.range(0, N)
+                    .mapToObj(i -> service.createVpc(region, "10." + i + ".0.0/16", false).getVpcId())
+                    .toList();
+
+            Set<String> allocations = runRace(i -> service.associateVpcIpv6CidrBlock(region, vpcIds.get(i))
+                    .getIpv6CidrBlock());
+
+            assertEquals(N, allocations.size(), "trial " + trial + ": every VPC must receive a unique /56");
+        }
+    }
+
+    @Test
     void concurrentAuthorizeIngressKeepsEveryRule() throws Exception {
         for (int trial = 0; trial < TRIALS; trial++) {
             String region = "race-sg-" + trial;

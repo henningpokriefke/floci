@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashSet;
@@ -1107,12 +1108,16 @@ public class Ec2Service {
         vpc.getCidrBlockAssociationSet().add(
                 new VpcCidrBlockAssociation("vpc-cidr-assoc-" + randomHex(8), cidrBlock));
         if (amazonProvidedIpv6CidrBlock) {
-            VpcIpv6CidrBlockAssociation association = new VpcIpv6CidrBlockAssociation(
-                    "vpc-cidr-assoc-" + randomHex(8), generatedIpv6CidrBlock(region));
-            association.setNetworkBorderGroup(region);
-            vpc.getIpv6CidrBlockAssociationSet().add(association);
+            synchronized (lockFor(ipv6AllocationLockKey(region))) {
+                VpcIpv6CidrBlockAssociation association = new VpcIpv6CidrBlockAssociation(
+                        "vpc-cidr-assoc-" + randomHex(8), generatedIpv6CidrBlock(region));
+                association.setNetworkBorderGroup(region);
+                vpc.getIpv6CidrBlockAssociationSet().add(association);
+                vpcs.put(key(region, vpcId), vpc);
+            }
+        } else {
+            vpcs.put(key(region, vpcId), vpc);
         }
-        vpcs.put(key(region, vpcId), vpc);
 
         createDefaultSecurityGroup(region, vpcId, "sg-" + randomHex(17));
         createMainRouteTable(region, vpc, "rtb-" + randomHex(17), "rtbassoc-" + randomHex(17));
@@ -1126,12 +1131,16 @@ public class Ec2Service {
                 .flatMap(v -> v.getIpv6CidrBlockAssociationSet().stream())
                 .map(VpcIpv6CidrBlockAssociation::getIpv6CidrBlock)
                 .collect(Collectors.toSet());
-        String cidr;
-        do {
-            String suffix = randomHex(6);
-            cidr = "2600:1f00:" + suffix.substring(0, 4) + ":" + suffix.substring(4) + "00::/56";
-        } while (allocated.contains(cidr));
-        return cidr;
+        for (int allocation = 0; allocation <= 0xffffff; allocation++) {
+            String suffix = String.format("%06x", allocation);
+            String cidr = "2600:1f00:" + suffix.substring(0, 4) + ":" + suffix.substring(4) + "00::/56";
+            if (!allocated.contains(cidr)) return cidr;
+        }
+        throw new AwsException("VpcLimitExceeded", "No Amazon-provided IPv6 CIDR blocks are available", 400);
+    }
+
+    private String ipv6AllocationLockKey(String region) {
+        return key(region, "amazon-provided-ipv6-cidr-allocation");
     }
 
     public List<Vpc> describeVpcs(String region, List<String> vpcIds, Map<String, List<String>> filters) {
@@ -1196,19 +1205,21 @@ public class Ec2Service {
 
     public VpcIpv6CidrBlockAssociation associateVpcIpv6CidrBlock(String region, String vpcId) {
         ensureDefaultResources(region);
-        synchronized (lockFor(key(region, vpcId))) {
-            Vpc vpc = getRequiredVpc(region, vpcId);
-            VpcIpv6CidrBlockAssociation association = new VpcIpv6CidrBlockAssociation(
-                    "vpc-cidr-assoc-" + randomHex(8), generatedIpv6CidrBlock(region));
-            association.setNetworkBorderGroup(region);
-            List<VpcIpv6CidrBlockAssociation> associations =
-                    new ArrayList<>(vpc.getIpv6CidrBlockAssociationSet());
-            associations.add(association);
-            vpc.setIpv6CidrBlockAssociationSet(associations);
-            vpcs.put(key(region, vpcId), vpc);
-            addVpcIpv6LocalRoutes(region, vpcId, association.getIpv6CidrBlock());
-            addVpcIpv6DefaultNetworkRules(region, vpcId);
-            return association;
+        synchronized (lockFor(ipv6AllocationLockKey(region))) {
+            synchronized (lockFor(key(region, vpcId))) {
+                Vpc vpc = getRequiredVpc(region, vpcId);
+                VpcIpv6CidrBlockAssociation association = new VpcIpv6CidrBlockAssociation(
+                        "vpc-cidr-assoc-" + randomHex(8), generatedIpv6CidrBlock(region));
+                association.setNetworkBorderGroup(region);
+                List<VpcIpv6CidrBlockAssociation> associations =
+                        new ArrayList<>(vpc.getIpv6CidrBlockAssociationSet());
+                associations.add(association);
+                vpc.setIpv6CidrBlockAssociationSet(associations);
+                vpcs.put(key(region, vpcId), vpc);
+                addVpcIpv6LocalRoutes(region, vpcId, association.getIpv6CidrBlock());
+                addVpcIpv6DefaultNetworkRules(region, vpcId);
+                return association;
+            }
         }
     }
 
@@ -1478,6 +1489,13 @@ public class Ec2Service {
     public Subnet createSubnet(String region, String vpcId, String cidrBlock, String ipv6CidrBlock,
                                String availabilityZone) {
         ensureDefaultResources(region);
+        synchronized (lockFor(key(region, vpcId))) {
+            return createSubnetLocked(region, vpcId, cidrBlock, ipv6CidrBlock, availabilityZone);
+        }
+    }
+
+    private Subnet createSubnetLocked(String region, String vpcId, String cidrBlock, String ipv6CidrBlock,
+                                      String availabilityZone) {
         Vpc vpc = getRequiredVpc(region, vpcId);
 
         String subnetId = "subnet-" + randomHex(8);
@@ -1493,7 +1511,7 @@ public class Ec2Service {
         subnet.setRegion(region);
         subnet.setSubnetArn(AwsArnUtils.Arn.of("ec2", region, accountId, "subnet/" + subnetId).toString());
         if (ipv6CidrBlock != null) {
-            validateSubnetIpv6CidrBlock(vpc, ipv6CidrBlock);
+            validateSubnetIpv6CidrBlock(region, vpc, subnetId, ipv6CidrBlock);
             subnet.getIpv6CidrBlockAssociationSet().add(new SubnetIpv6CidrBlockAssociation(
                     "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock));
         }
@@ -1524,20 +1542,24 @@ public class Ec2Service {
 
     public SubnetIpv6CidrBlockAssociation associateSubnetCidrBlock(
             String region, String subnetId, String ipv6CidrBlock) {
-        synchronized (lockFor(key(region, subnetId))) {
+        Subnet existing = requireSubnet(region, subnetId);
+        synchronized (lockFor(key(region, existing.getVpcId()))) {
             Subnet subnet = requireSubnet(region, subnetId);
-            validateSubnetIpv6CidrBlock(getRequiredVpc(region, subnet.getVpcId()), ipv6CidrBlock);
-            if (!subnet.getIpv6CidrBlockAssociationSet().isEmpty()) {
-                throw new AwsException("Resource.AlreadyAssociated",
-                        "The subnet '" + subnetId + "' already has an IPv6 CIDR block association", 400);
+            synchronized (lockFor(key(region, subnetId))) {
+                validateSubnetIpv6CidrBlock(
+                        region, getRequiredVpc(region, subnet.getVpcId()), subnetId, ipv6CidrBlock);
+                if (!subnet.getIpv6CidrBlockAssociationSet().isEmpty()) {
+                    throw new AwsException("Resource.AlreadyAssociated",
+                            "The subnet '" + subnetId + "' already has an IPv6 CIDR block association", 400);
+                }
+                SubnetIpv6CidrBlockAssociation association = new SubnetIpv6CidrBlockAssociation(
+                        "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock);
+                List<SubnetIpv6CidrBlockAssociation> next = new ArrayList<>(subnet.getIpv6CidrBlockAssociationSet());
+                next.add(association);
+                subnet.setIpv6CidrBlockAssociationSet(next);
+                subnets.put(key(region, subnetId), subnet);
+                return association;
             }
-            SubnetIpv6CidrBlockAssociation association = new SubnetIpv6CidrBlockAssociation(
-                    "subnet-cidr-assoc-" + randomHex(8), ipv6CidrBlock);
-            List<SubnetIpv6CidrBlockAssociation> next = new ArrayList<>(subnet.getIpv6CidrBlockAssociationSet());
-            next.add(association);
-            subnet.setIpv6CidrBlockAssociationSet(next);
-            subnets.put(key(region, subnetId), subnet);
-            return association;
         }
     }
 
@@ -1562,7 +1584,7 @@ public class Ec2Service {
                 "The subnet CIDR association ID '" + associationId + "' does not exist", 400);
     }
 
-    private void validateSubnetIpv6CidrBlock(Vpc vpc, String cidrBlock) {
+    private void validateSubnetIpv6CidrBlock(String region, Vpc vpc, String subnetId, String cidrBlock) {
         String[] parts = cidrBlock.split("/", -1);
         if (parts.length != 2 || !"64".equals(parts[1])) {
             throw new AwsException("InvalidParameterValue", "Subnet IPv6 CIDR blocks must use a /64 prefix", 400);
@@ -1575,8 +1597,27 @@ public class Ec2Service {
                 throw new AwsException("InvalidParameterValue",
                         "The subnet IPv6 CIDR block must be within the VPC IPv6 CIDR block", 400);
             }
+            boolean overlaps = subnets.scan(k -> true).stream()
+                    .filter(subnet -> region.equals(subnet.getRegion()) && vpc.getVpcId().equals(subnet.getVpcId()))
+                    .filter(subnet -> !subnetId.equals(subnet.getSubnetId()))
+                    .flatMap(subnet -> subnet.getIpv6CidrBlockAssociationSet().stream())
+                    .anyMatch(association -> sameIpv6Subnet(
+                            subnetAddress.getAddress(), association.getIpv6CidrBlock()));
+            if (overlaps) {
+                throw new AwsException("InvalidSubnet.Conflict",
+                        "The IPv6 CIDR block '" + cidrBlock + "' conflicts with another subnet", 400);
+            }
         } catch (UnknownHostException exception) {
             throw new AwsException("InvalidParameterValue", "Invalid IPv6 CIDR block '" + cidrBlock + "'", 400);
+        }
+    }
+
+    private boolean sameIpv6Subnet(byte[] requestedAddress, String existingCidrBlock) {
+        try {
+            byte[] existingAddress = InetAddress.getByName(existingCidrBlock.split("/", -1)[0]).getAddress();
+            return Arrays.equals(Arrays.copyOf(requestedAddress, 8), Arrays.copyOf(existingAddress, 8));
+        } catch (UnknownHostException exception) {
+            return false;
         }
     }
 
